@@ -1,0 +1,13 @@
+{
+  "ir": "0.1.0",
+  "app": "PlainCounter",
+  "state": [ { "name": "count", "type": "int", "init": 0 } ],
+  "tree": {
+    "id": 0,
+    "kind": "Column",
+    "props": {},
+    "children": [],
+    "events": {}
+  },
+  "theme": { "mode": "system", "accent": "#4F46E5", "radius": 12 }
+}

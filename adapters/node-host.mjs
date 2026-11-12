@@ -1,0 +1,301 @@
+// Opurom Node.js runtime host.
+//
+// Implements the same CRUD business logic as the Rust adapters, driven by the
+// IR `models`/`api` arrays handed over during the handshake, and speaks
+// line-delimited JSON over stdin/stdout:
+//
+//   -> {"type":"handshake","ir":{...}}
+//   <- {"type":"ready","ok":true,"protocol":"opurom-runtime-adapters/1"}
+//   -> {"type":"invoke","request":{"method":"GET","path":"/todos","body":null}}
+//   <- {"type":"response","status":200,"body":"[...]"}
+//   -> {"type":"shutdown"}
+//   <- {"type":"bye"}
+//
+// The `body` field is a canonical JSON *string*: object keys sorted, no
+// insignificant whitespace. That is the byte form the Rust side compares.
+
+import readline from 'node:readline';
+
+const MAX_BODY_BYTES = 1024 * 1024;
+const PROTOCOL = 'opurom-runtime-adapters/1';
+
+let ir = { app: '', models: [], api: [] };
+/** model name -> Map(key -> row) */
+const tables = new Map();
+
+function canonicalJson(value) {
+  if (value === null || value === undefined) return 'null';
+  if (Array.isArray(value)) {
+    return '[' + value.map(canonicalJson).join(',') + ']';
+  }
+  if (typeof value === 'object') {
+    const keys = Object.keys(value).sort(compareBytes);
+    const parts = keys.map(
+      (key) => JSON.stringify(key) + ':' + canonicalJson(value[key])
+    );
+    return '{' + parts.join(',') + '}';
+  }
+  return JSON.stringify(value);
+}
+
+// Byte-wise key order, matching the Rust serializer's key order.
+function compareBytes(a, b) {
+  return Buffer.compare(Buffer.from(a, 'utf8'), Buffer.from(b, 'utf8'));
+}
+
+function segments(path) {
+  return path.split('/').filter((part) => part.length > 0);
+}
+
+function modelByName(name) {
+  return ir.models.find((model) => model.name === name) || null;
+}
+
+function keyInfo(model) {
+  const primary = model.fields.find((field) => field.primary);
+  if (primary) {
+    return { name: primary.name, kind: primary.type, implicit: false };
+  }
+  // the framework implementation: zero primary fields is legal, an auto rowid is used.
+  return { name: 'id', kind: 'int', implicit: true };
+}
+
+function matchesKind(kind, value) {
+  if (kind === 'int') return typeof value === 'number' && Number.isSafeInteger(value);
+  if (kind === 'string') return typeof value === 'string';
+  if (kind === 'bool') return typeof value === 'boolean';
+  return false;
+}
+
+function typedKey(kind, keyValue) {
+  return kind === 'int' ? Number(keyValue) : keyValue;
+}
+
+// Canonical key rule: an int key is the decimal spelling of its value, so
+// leading zeros are not keys. A string key is used verbatim.
+function parseKey(kind, raw) {
+  if (kind !== 'int') return raw;
+  if (!/^-?\d+$/.test(raw)) return null;
+  const value = Number(raw);
+  if (!Number.isSafeInteger(value)) return null;
+  return String(value) === raw ? raw : null;
+}
+
+function table(model) {
+  let rows = tables.get(model);
+  if (!rows) {
+    rows = new Map();
+    tables.set(model, rows);
+  }
+  return rows;
+}
+
+function findRoute(requestSegments) {
+  for (const api of ir.api) {
+    const parts = segments(api.path);
+    if (parts.length !== requestSegments.length) continue;
+    let param = null;
+    let matched = true;
+    for (let i = 0; i < parts.length; i += 1) {
+      if (parts[i].startsWith(':')) {
+        param = requestSegments[i];
+      } else if (parts[i] !== requestSegments[i]) {
+        matched = false;
+        break;
+      }
+    }
+    if (matched) return { api, param };
+  }
+  return null;
+}
+
+function nextId(model, keyName) {
+  let max = 0;
+  for (const row of table(model).values()) {
+    const value = row[keyName];
+    if (typeof value === 'number' && value > max) max = value;
+  }
+  return max + 1;
+}
+
+function buildRow(model, key, keyValue, body, existing) {
+  const row = {};
+  for (const field of model.fields) {
+    if (field.name === key.name) {
+      row[field.name] = typedKey(key.kind, keyValue);
+      continue;
+    }
+    if (Object.prototype.hasOwnProperty.call(body, field.name)) {
+      const value = body[field.name];
+      if (!matchesKind(field.type, value)) {
+        return {
+          error: { status: 400, body: { error: 'invalid_field', field: field.name } },
+        };
+      }
+      row[field.name] = value;
+    } else if (existing && Object.prototype.hasOwnProperty.call(existing, field.name)) {
+      row[field.name] = existing[field.name];
+    } else if (field.default !== null && field.default !== undefined) {
+      row[field.name] = field.default;
+    } else if (!existing) {
+      return {
+        error: { status: 400, body: { error: 'invalid_body', field: field.name } },
+      };
+    }
+  }
+  if (key.implicit) row[key.name] = typedKey(key.kind, keyValue);
+  return { row };
+}
+
+function notFound() {
+  return { status: 404, body: { error: 'not_found' } };
+}
+
+function invalidBody(field) {
+  const body = { error: 'invalid_body' };
+  if (field) body.field = field;
+  return { status: 400, body };
+}
+
+function handle(request) {
+  const method = String(request.method || '');
+  const path = String(request.path || '');
+  const requestBody = request.body === undefined ? null : request.body;
+
+  if (canonicalJson(requestBody).length > MAX_BODY_BYTES) {
+    return { status: 413, body: { error: 'payload_too_large' } };
+  }
+
+  const found = findRoute(segments(path));
+  if (!found) return notFound();
+
+  let verb;
+  if (method === 'GET') verb = found.param === null ? 'list' : 'get';
+  else if (method === 'POST') verb = 'create';
+  else if (method === 'PUT') verb = 'update';
+  else if (method === 'DELETE') verb = 'delete';
+  else return notFound();
+
+  if (!found.api.handlers.includes(verb)) return notFound();
+
+  const model = modelByName(found.api.model);
+  if (!model) return notFound();
+
+  const key = keyInfo(model);
+  let itemKey = null;
+  if (found.param !== null) {
+    itemKey = parseKey(key.kind, found.param);
+    if (itemKey === null) return notFound();
+  }
+  if ((verb === 'get' || verb === 'update' || verb === 'delete') && itemKey === null) {
+    return notFound();
+  }
+
+  const rows = table(model.name);
+
+  if (verb === 'list') {
+    return { status: 200, body: Array.from(rows.values()) };
+  }
+
+  if (verb === 'create') {
+    if (requestBody === null || typeof requestBody !== 'object' || Array.isArray(requestBody)) {
+      return invalidBody(null);
+    }
+    let keyValue;
+    if (key.kind === 'int') {
+      if (Object.prototype.hasOwnProperty.call(requestBody, key.name)) {
+        const value = requestBody[key.name];
+        if (!matchesKind('int', value)) {
+          return { status: 400, body: { error: 'invalid_field', field: key.name } };
+        }
+        keyValue = String(value);
+      } else {
+        keyValue = String(nextId(model.name, key.name));
+      }
+    } else {
+      if (!Object.prototype.hasOwnProperty.call(requestBody, key.name)) {
+        return invalidBody(key.name);
+      }
+      const value = requestBody[key.name];
+      if (typeof value !== 'string') {
+        return { status: 400, body: { error: 'invalid_field', field: key.name } };
+      }
+      keyValue = value;
+    }
+    if (rows.has(keyValue)) {
+      return { status: 409, body: { error: 'conflict' } };
+    }
+    const built = buildRow(model, key, keyValue, requestBody, null);
+    if (built.error) return built.error;
+    rows.set(keyValue, built.row);
+    return { status: 201, body: built.row };
+  }
+
+  if (verb === 'get') {
+    const row = rows.get(itemKey);
+    if (!row) return notFound();
+    return { status: 200, body: row };
+  }
+
+  if (verb === 'update') {
+    if (requestBody === null || typeof requestBody !== 'object' || Array.isArray(requestBody)) {
+      return invalidBody(null);
+    }
+    const existing = rows.get(itemKey);
+    if (!existing) return notFound();
+    const built = buildRow(model, key, itemKey, requestBody, existing);
+    if (built.error) return built.error;
+    rows.set(itemKey, built.row);
+    return { status: 200, body: built.row };
+  }
+
+  if (!rows.delete(itemKey)) return notFound();
+  return { status: 200, body: { deleted: true } };
+}
+
+function write(message) {
+  process.stdout.write(JSON.stringify(message) + '\n');
+}
+
+const rl = readline.createInterface({ input: process.stdin, crlfDelay: Infinity });
+
+rl.on('line', (line) => {
+  const trimmed = line.trim();
+  if (trimmed.length === 0) return;
+  let message;
+  try {
+    message = JSON.parse(trimmed);
+  } catch (error) {
+    write({ type: 'error', message: `host received a non-JSON line: ${error.message}` });
+    return;
+  }
+  try {
+    if (message.type === 'handshake') {
+      ir = {
+        app: (message.ir && message.ir.app) || '',
+        models: (message.ir && message.ir.models) || [],
+        api: (message.ir && message.ir.api) || [],
+      };
+      tables.clear();
+      write({ type: 'ready', ok: true, protocol: PROTOCOL });
+      return;
+    }
+    if (message.type === 'invoke') {
+      const response = handle(message.request || {});
+      write({
+        type: 'response',
+        status: response.status,
+        body: canonicalJson(response.body),
+      });
+      return;
+    }
+    if (message.type === 'shutdown') {
+      write({ type: 'bye', ok: true });
+      rl.close();
+      process.exit(0);
+    }
+    write({ type: 'error', message: `unknown host message type ${message.type}` });
+  } catch (error) {
+    write({ type: 'error', message: `host failure: ${error.message}` });
+  }
+});

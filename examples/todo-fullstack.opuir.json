@@ -1,0 +1,27 @@
+{
+  "ir": "0.1.0",
+  "app": "TodoApp",
+  "state": [],
+  "tree": {
+    "id": 0,
+    "kind": "Column",
+    "props": {},
+    "children": [],
+    "events": {}
+  },
+  "theme": { "mode": "system", "accent": "#4F46E5", "radius": 12 },
+  "models": [
+    {
+      "name": "Todo",
+      "fields": [
+        { "name": "id", "type": "int", "primary": true, "default": null },
+        { "name": "title", "type": "string", "primary": false, "default": null },
+        { "name": "done", "type": "bool", "primary": false, "default": false }
+      ]
+    }
+  ],
+  "api": [
+    { "path": "/todos", "model": "Todo", "handlers": ["list", "create"] },
+    { "path": "/todos/:id", "model": "Todo", "handlers": ["get", "update", "delete"] }
+  ]
+}
