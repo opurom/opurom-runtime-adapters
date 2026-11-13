@@ -13,6 +13,7 @@ use crate::ir::{matches_kind, FieldKind, FullstackIr, IrApi, IrModel};
 use crate::store::Store;
 use crate::{AdapterError, Request, Response};
 use serde_json::{json, Map, Value};
+use std::collections::BTreeMap;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Check {
@@ -47,29 +48,28 @@ fn segments(path: &str) -> Vec<&str> {
     path.split('/').filter(|s| !s.is_empty()).collect()
 }
 
-/// Shortcut: with several `:name` segments the last one is bound. Upgrade to a
-/// parameter map when an IR declares more than one path parameter.
+// Bind by name, not by position, so the key field's parameter wins among several.
 fn find_route<'a>(
     ir: &'a FullstackIr,
     request_segments: &[&str],
-) -> Option<(&'a IrApi, Option<String>)> {
+) -> Option<(&'a IrApi, BTreeMap<String, String>)> {
     for api in &ir.api {
         let parts = segments(&api.path);
         if parts.len() != request_segments.len() {
             continue;
         }
-        let mut param = None;
+        let mut params = BTreeMap::new();
         let mut matched = true;
         for (part, segment) in parts.iter().zip(request_segments.iter()) {
-            if part.starts_with(':') {
-                param = Some((*segment).to_owned());
+            if let Some(name) = part.strip_prefix(':') {
+                params.insert(name.to_owned(), (*segment).to_owned());
             } else if *part != *segment {
                 matched = false;
                 break;
             }
         }
         if matched {
-            return Some((api, param));
+            return Some((api, params));
         }
     }
     None
@@ -172,12 +172,12 @@ pub fn handle(
     }
 
     let request_segments = segments(&req.path);
-    let Some((api, param)) = find_route(ir, &request_segments) else {
+    let Some((api, params)) = find_route(ir, &request_segments) else {
         return Ok(not_found());
     };
-    let verb = match (req.method.as_str(), param.is_some()) {
-        ("GET", false) => "list",
-        ("GET", true) => "get",
+    let verb = match (req.method.as_str(), params.is_empty()) {
+        ("GET", true) => "list",
+        ("GET", false) => "get",
         ("POST", _) => "create",
         ("PUT", _) => "update",
         ("DELETE", _) => "delete",
@@ -190,7 +190,7 @@ pub fn handle(
         return Ok(not_found());
     };
     let key = key_info(model);
-    let item_key = match param.as_deref() {
+    let item_key = match params.get(&key.name) {
         Some(raw) => match parse_key(key.kind, raw) {
             Some(value) => Some(value),
             None => return Ok(not_found()),

@@ -94,17 +94,18 @@ function findRoute(requestSegments) {
   for (const api of ir.api) {
     const parts = segments(api.path);
     if (parts.length !== requestSegments.length) continue;
-    let param = null;
+    // Bind by name, not by position, so the key field's parameter wins among several.
+    const params = new Map();
     let matched = true;
     for (let i = 0; i < parts.length; i += 1) {
       if (parts[i].startsWith(':')) {
-        param = requestSegments[i];
+        params.set(parts[i].slice(1), requestSegments[i]);
       } else if (parts[i] !== requestSegments[i]) {
         matched = false;
         break;
       }
     }
-    if (matched) return { api, param };
+    if (matched) return { api, params };
   }
   return null;
 }
@@ -170,7 +171,7 @@ function handle(request) {
   if (!found) return notFound();
 
   let verb;
-  if (method === 'GET') verb = found.param === null ? 'list' : 'get';
+  if (method === 'GET') verb = found.params.size === 0 ? 'list' : 'get';
   else if (method === 'POST') verb = 'create';
   else if (method === 'PUT') verb = 'update';
   else if (method === 'DELETE') verb = 'delete';
@@ -183,8 +184,9 @@ function handle(request) {
 
   const key = keyInfo(model);
   let itemKey = null;
-  if (found.param !== null) {
-    itemKey = parseKey(key.kind, found.param);
+  const rawKey = found.params.get(key.name);
+  if (rawKey !== undefined) {
+    itemKey = parseKey(key.kind, rawKey);
     if (itemKey === null) return notFound();
   }
   if ((verb === 'get' || verb === 'update' || verb === 'delete') && itemKey === null) {

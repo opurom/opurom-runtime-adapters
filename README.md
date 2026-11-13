@@ -149,6 +149,14 @@ List responses are in insertion order on every runtime. The embedded store
 compacts its fixed slots on delete, so reusing a freed slot cannot reorder the
 remaining rows.
 
+## Path parameters
+
+An API route may declare more than one `:name` segment. Each such segment is
+bound to its request segment under the declared name. The row key for `get`,
+`update` and `delete` is read from the parameter whose name matches the model's
+key field; other bound parameters do not supply the row key. Literal segments
+must match exactly.
+
 ## How to run the conformance suite
 
 ```sh
@@ -162,6 +170,7 @@ node --check adapters/node-host.mjs
 - `tests/conformance.rs` — the seven sample requests against all four
   runtimes, asserting byte-identical canonical responses; the error-path and
   list-order table; the exact expected bytes for the documented CRUD answers;
+  two-parameter routes dispatching from the named key on all four runtimes;
   a missing `node` binary yielding a clean `AdapterError`; a deliberately
   non-responsive host timing out in under 2 seconds; the embedded runtime
   refusing to exceed its fixed capacity; and a plain 0.1.0 IR working with an

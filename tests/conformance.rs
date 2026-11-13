@@ -563,3 +563,107 @@ fn all_runtimes_share_the_error_path_and_list_order_bytes() {
     }
     assert_eq!(cases.len(), 29);
 }
+
+/// Item route with the key segment first; dispatch then depends on binding by
+/// name rather than by segment position.
+fn nested_ir() -> FullstackIr {
+    let value = json!({
+        "ir": "0.1.0",
+        "app": "NestedTodos",
+        "models": [
+            {
+                "name": "Todo",
+                "fields": [
+                    { "name": "id", "type": "int", "primary": true, "default": null },
+                    { "name": "title", "type": "string", "primary": false, "default": null },
+                    { "name": "done", "type": "bool", "primary": false, "default": false }
+                ]
+            }
+        ],
+        "api": [
+            { "path": "/todos", "model": "Todo", "handlers": ["list", "create"] },
+            {
+                "path": "/todos/:id/details/:section",
+                "model": "Todo",
+                "handlers": ["get", "update", "delete"]
+            }
+        ]
+    });
+    FullstackIr::from_value(&value).expect("the nested IR parses")
+}
+
+const NESTED_ROW_X: &[u8] = br#"{"body":{"done":false,"id":1,"title":"x"},"status":200}"#;
+const NESTED_ROW_Y: &[u8] = br#"{"body":{"done":false,"id":1,"title":"y"},"status":200}"#;
+const NESTED_DELETED: &[u8] = br#"{"body":{"deleted":true},"status":200}"#;
+
+fn nested_trace() -> Vec<Request> {
+    vec![
+        post(json!({ "title": "x", "done": false })),
+        get("/todos/1/details/general"),
+        get("/todos/1/details/other"),
+        put("/todos/1/details/general", json!({ "title": "y" })),
+        get("/todos/999/details/general"),
+        get("/todos/1/summary/general"),
+        delete("/todos/1/details/general"),
+        get("/todos/1/details/general"),
+    ]
+}
+
+fn nested_expected() -> Vec<&'static [u8]> {
+    vec![
+        CREATED_X,
+        NESTED_ROW_X,
+        NESTED_ROW_X,
+        NESTED_ROW_Y,
+        NOT_FOUND,
+        NOT_FOUND,
+        NESTED_DELETED,
+        NOT_FOUND,
+    ]
+}
+
+#[test]
+fn a_two_parameter_route_dispatches_from_the_named_key() {
+    let mut native = NativeRust::new(nested_ir());
+    let requests = nested_trace();
+    let expected = nested_expected();
+    for (index, request) in requests.iter().enumerate() {
+        let bytes = native
+            .invoke(request)
+            .expect("the adapter answers")
+            .canonical_bytes();
+        assert_eq!(
+            bytes.as_slice(),
+            expected[index],
+            "wrong response for step {index} ({})",
+            request.path
+        );
+    }
+    native.shutdown().expect("native shuts down");
+}
+
+#[test]
+fn all_runtimes_agree_on_two_parameter_routes() {
+    let ir = nested_ir();
+    let requests = nested_trace();
+    let mut answers: Vec<Vec<Vec<u8>>> = Vec::new();
+    for mut adapter in parity_adapters(&ir) {
+        let name = adapter.name().to_owned();
+        let bytes = run_requests(adapter.as_mut(), &requests);
+        adapter.shutdown().expect("the adapter shuts down");
+        assert_eq!(
+            bytes[1].as_slice(),
+            NESTED_ROW_X,
+            "{name} does not dispatch the item route"
+        );
+        answers.push(bytes);
+    }
+    let reference = &answers[0];
+    for (offset, bytes) in answers[1..].iter().enumerate() {
+        let name = ["node", "edge", "embedded"][offset];
+        assert_eq!(bytes, reference, "{name} differs from native");
+    }
+    for (index, expected) in nested_expected().iter().enumerate() {
+        assert_eq!(reference[index].as_slice(), *expected, "step {index}");
+    }
+}
