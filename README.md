@@ -165,6 +165,21 @@ is applied before route matching:
 - a `null` body — the wire form of a missing or empty payload — keeps the
   `400 {"error":"invalid_body"}` answer for create and update.
 
+### Request body cap
+
+A third table-driven case set in `tests/conformance.rs` pins the 1 MiB
+`max_body` cap to exact bytes on all four runtimes. The cap counts whole
+UTF-8 bytes of the canonical request body and is applied before route
+matching, so the rule is identical everywhere:
+
+- a body of exactly 1 MiB is still processed (`>` comparison, not `>=`);
+- one byte over the cap answers `413 {"error":"payload_too_large"}` for
+  every method, before route matching or payload handling;
+- a multi-byte body crosses the cap by byte count alone: a body of
+  two-byte characters whose UTF-16 code unit count stays under 1 MiB still
+  answers 413 once its byte count is over, because the Node host counts
+  UTF-8 bytes exactly like the Rust adapters.
+
 ## Path parameters
 
 An API route may declare more than one `:name` segment. Each such segment is
@@ -185,8 +200,8 @@ node --check adapters/node-host.mjs
 
 - `tests/conformance.rs` — the seven sample requests against all four
   runtimes, asserting byte-identical canonical responses; the error-path and
-  list-order table; the content-type table; the exact expected bytes for the
-  documented CRUD answers;
+  list-order table; the content-type table; the body-cap table; the exact
+  expected bytes for the documented CRUD answers;
   two-parameter routes dispatching from the named key on all four runtimes;
   a missing `node` binary yielding a clean `AdapterError`; a deliberately
   non-responsive host timing out in under 2 seconds; the embedded runtime

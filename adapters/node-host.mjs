@@ -171,7 +171,10 @@ function handle(request) {
   const path = String(request.path || '');
   const requestBody = request.body === undefined ? null : request.body;
 
-  if (canonicalJson(requestBody).length > MAX_BODY_BYTES) {
+  // The cap is the UTF-8 byte count the Rust adapters compare against
+  // `max_body`: string length counts UTF-16 code units, so a multi-byte body
+  // would cross the shared cap at a different size on this runtime alone.
+  if (Buffer.byteLength(canonicalJson(requestBody), 'utf8') > MAX_BODY_BYTES) {
     return { status: 413, body: { error: 'payload_too_large' } };
   }
 

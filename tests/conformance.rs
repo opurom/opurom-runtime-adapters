@@ -10,7 +10,7 @@ use opurom_runtime_adapters::adapters::{
     default_host_script, Edge, Embedded, NativeRust, NodeConfig, NodeJs,
 };
 use opurom_runtime_adapters::{
-    sample_checks, AdapterError, Check, FullstackIr, Request, RuntimeAdapter,
+    sample_checks, AdapterError, Check, FullstackIr, Request, RuntimeAdapter, MAX_BODY_BYTES,
 };
 use serde_json::{json, Value};
 use std::path::PathBuf;
@@ -313,6 +313,7 @@ const CONFLICT: &[u8] = br#"{"body":{"error":"conflict"},"status":409}"#;
 const UNSUPPORTED_MEDIA_TYPE: &[u8] =
     br#"{"body":{"error":"unsupported_media_type"},"status":415}"#;
 const EMPTY_LIST: &[u8] = br#"{"body":[],"status":200}"#;
+const PAYLOAD_TOO_LARGE: &[u8] = br#"{"body":{"error":"payload_too_large"},"status":413}"#;
 const CREATED_X: &[u8] = br#"{"body":{"done":false,"id":1,"title":"x"},"status":201}"#;
 const CREATED_Y: &[u8] = br#"{"body":{"done":false,"id":2,"title":"y"},"status":201}"#;
 const ORDERED_LIST: &[u8] = br#"{"body":[{"done":false,"id":1,"title":"a"},{"done":false,"id":3,"title":"c"},{"done":false,"id":4,"title":"d"}],"status":200}"#;
@@ -627,6 +628,73 @@ fn all_runtimes_share_the_content_type_bytes() {
     let cases = content_type_cases();
     assert_cross_runtime_parity(&ir, &cases);
     assert_eq!(cases.len(), 7);
+}
+
+/// A body whose compact canonical JSON is exactly `target` bytes: one `a`
+/// moves the count by one, so the cap boundary is reachable precisely.
+fn body_of_canonical_len(target: usize) -> Value {
+    let mut body = json!({ "title": "a" });
+    let base = serde_json::to_vec(&body)
+        .expect("the body serializes")
+        .len();
+    body["title"] = Value::String("a".repeat(target - base + 1));
+    let check = serde_json::to_vec(&body)
+        .expect("the body serializes")
+        .len();
+    assert_eq!(
+        check, target,
+        "the helper must land on the requested length"
+    );
+    body
+}
+
+/// The 1 MiB body cap parity: exactly at the cap a request is still
+/// processed, one byte over is refused before route matching, and the count
+/// is whole UTF-8 bytes on every runtime.
+fn body_cap_cases() -> Vec<ParityCase> {
+    vec![
+        ParityCase {
+            name: "body-exactly-at-cap-is-processed",
+            requests: vec![put("/todos/999", body_of_canonical_len(MAX_BODY_BYTES))],
+            expected: NOT_FOUND,
+        },
+        ParityCase {
+            name: "create-one-byte-over-cap",
+            requests: vec![post(body_of_canonical_len(MAX_BODY_BYTES + 1))],
+            expected: PAYLOAD_TOO_LARGE,
+        },
+        ParityCase {
+            name: "create-multibyte-over-cap",
+            requests: vec![post(multibyte_body_over_cap())],
+            expected: PAYLOAD_TOO_LARGE,
+        },
+    ]
+}
+
+/// One `é` is two UTF-8 bytes but one UTF-16 code unit, so a body of them
+/// sits strictly between the byte count and the unit count: over the cap by
+/// bytes, under it by units. Only the byte count is shared by all runtimes.
+fn multibyte_body_over_cap() -> Value {
+    let body = json!({ "title": "\u{e9}".repeat(600_000) });
+    let bytes = serde_json::to_vec(&body).expect("the body serializes");
+    assert!(
+        bytes.len() > MAX_BODY_BYTES,
+        "the body must exceed the byte cap"
+    );
+    let text = std::str::from_utf8(&bytes).expect("the body is UTF-8");
+    assert!(
+        text.encode_utf16().count() < MAX_BODY_BYTES,
+        "the body must stay under the UTF-16 unit count"
+    );
+    body
+}
+
+#[test]
+fn all_runtimes_share_the_body_cap_bytes() {
+    let ir = todo_ir();
+    let cases = body_cap_cases();
+    assert_cross_runtime_parity(&ir, &cases);
+    assert_eq!(cases.len(), 3);
 }
 
 /// Item route with the key segment first; dispatch then depends on binding by
