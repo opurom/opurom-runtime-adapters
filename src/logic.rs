@@ -332,7 +332,7 @@ fn item_path(
 
 /// Seven stateful checks derived from the IR: list empty, create, list one,
 /// get, update, delete, 404. A plain 0.1.0 IR (no `models`/`api`) yields one
-/// structural check so the runtimes are still exercised honestly.
+/// structural check so every runtime is still exercised.
 pub fn sample_checks(ir: &FullstackIr) -> Vec<Check> {
     let structural = || {
         vec![Check {

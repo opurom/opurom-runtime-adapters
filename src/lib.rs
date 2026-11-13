@@ -1,4 +1,4 @@
-//! Opurom capability backend runtime adapters.
+//! Opurom backend runtime adapters.
 //!
 //! This crate proves one narrow claim: the same CRUD business logic, derived
 //! from the `models`/`api` arrays of a full-stack IR, produces byte-identical
@@ -96,7 +96,7 @@ pub struct Capabilities {
     pub max_body: usize,
 }
 
-/// Honest verification status of a runtime row in the conformance report.
+/// Verification status of a runtime row in the conformance report.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Status {
     /// Every local conformance check passed. Local conformance only.

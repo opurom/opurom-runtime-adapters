@@ -1,5 +1,5 @@
-//! The conformance report binary: format, honesty of the status column, and
-//! clean failure on a bad IR.
+//! The conformance report binary: format, the status column, and clean
+//! failure on a bad IR.
 
 use std::path::PathBuf;
 use std::process::Command;

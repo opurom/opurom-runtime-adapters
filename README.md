@@ -1,6 +1,6 @@
 # opurom-runtime-adapters
 
-Backend runtime adapters for Opurom capability, and the local conformance harness that
+Backend runtime adapters for Opurom, and the local conformance harness that
 proves a narrow, checkable claim: **one business logic, multiple backend
 runtimes**.
 
@@ -151,7 +151,7 @@ node --check adapters/node-host.mjs
   clean `AdapterError`; a deliberately non-responsive host timing out in under
   2 seconds; the embedded runtime refusing to exceed its fixed capacity; and
   a plain 0.1.0 IR working with an empty model set.
-- `tests/report.rs` — the report format, the honest status column, and clean
+- `tests/report.rs` — the report format, the status column, and clean
   failure on a bad IR.
 
 The Node host script lives at `adapters/node-host.mjs` and is found through
@@ -170,19 +170,19 @@ and then deliberately never answers.
    `adapters::parse_canonical_body` enforces this on the way in.
 4. Bound every wait. A runtime that stops answering must produce
    `AdapterError::Timeout` within the configured limit, never a hang.
-5. Add a row to the report in `src/main.rs` with an honest `Status`.
+5. Add a row to the report in `src/main.rs` with a truthful `Status`.
    `Verified` requires that the local checks actually ran and passed;
    `Scaffold` means the adapter exists but its checks did not all pass;
    `Planned` means no adapter and no checks.
 6. Add the runtime to `tests/conformance.rs` and assert its responses are
    byte-identical to `native`.
-7. Add the runtime to the matrix table in this README, with the same honesty
-   rule: list what is *not* verified.
+7. Add the runtime to the matrix table in this README, with the same rule:
+   state what the local checks do and do not cover.
 8. Keep the `serverless-cloud | Planned | 0 | no deployment attempted` row.
 
-## Honest status
+## Verified status
 
-### Verified (local conformance only)
+Verified by the local conformance suite in this crate:
 
 - `native`: in-process Rust, seven checks, byte-identical by construction.
 - `node`: a real `node` subprocess with a real handshake, real round trips and
@@ -191,29 +191,28 @@ and then deliberately never answers.
 - `edge`: a pure request -> response function with zero IO.
 - `embedded`: single-threaded, fixed capacity, constant resident footprint.
 
-### NOT verified
+## Scope of this repository
 
-- **Real serverless or edge cloud deployment.** No cloud provider is contacted,
-  nothing is deployed, no bundle is uploaded. The `serverless-cloud` row is
-  `Planned` with 0 checks.
-- **Node.js service bundling.** `adapters/node-host.mjs` runs from the source
-  tree. No `npm` bundle, no bundler, no lockfile, no dependency install.
-- **PostgreSQL / MySQL.** No SQL driver exists here. Storage is an in-memory
+- **Local conformance only.** No cloud provider is contacted and nothing is
+  deployed, so the `serverless-cloud` row is `Planned` with 0 checks.
+- **Source-tree host.** `adapters/node-host.mjs` runs from the source tree:
+  no `npm` bundle, no bundler, no lockfile, no dependency install.
+- **In-process storage.** No SQL driver exists here. Storage is an in-memory
   map (native, node, edge) or a fixed inline table (embedded).
-- **Multi-tenant isolation.** One adapter instance, one session table. There is
-  no tenant concept.
-- **Latency / fps / cold-start benchmarks.** No numbers are reported. The
-  conformance suite measures correctness, not performance.
-- **Concurrency and load behaviour.** The embedded runtime is single-threaded
-  by construction; the others are exercised one request at a time.
-- **Production hardening.** No TLS, no authentication, no rate limiting, no
-  request logging, no crash recovery, no observability.
+- **One session table.** One adapter instance, one session table, no tenant
+  concept.
+- **Correctness measurements.** The conformance suite measures correctness, not
+  performance; no latency, fps or cold-start numbers are reported.
+- **One request at a time.** The embedded runtime is single-threaded by
+  construction; the others are exercised one request at a time.
+- **Plain local serving.** No TLS, authentication, rate limiting, request
+  logging, crash recovery or observability.
 
 ## Layout
 
 ```text
 src/lib.rs             the RuntimeAdapter ABI, Request/Response/Capabilities/Status
-src/ir.rs              parsing of the capability `models` / `api` arrays
+src/ir.rs              parsing of the `models` / `api` arrays
 src/logic.rs           the one business logic and the derived sample checks
 src/store.rs           MapStore (native/edge/node) and FixedStore (embedded)
 src/report.rs          the conformance harness helpers

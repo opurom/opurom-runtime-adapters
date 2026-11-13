@@ -1,4 +1,4 @@
-//! Parsing of the capability additive `models` / `api` arrays from an Opurom IR file.
+//! Parsing of the additive `models` / `api` arrays from an Opurom IR file.
 //!
 //! A plain 0.1.0 IR (the IR format) has neither array; it parses to an empty
 //! model set and the conformance harness falls back to structural checks.

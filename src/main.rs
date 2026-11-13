@@ -1,10 +1,9 @@
 //! `opurom-runtime-adapters <fullstack-ir.json>` prints a runtime conformance
 //! report.
 //!
-//! The report is honest about what was and was not attempted. Every `Verified`
-//! row means "this runtime passed the local conformance checks on this
-//! machine". The `serverless-cloud` row is always `Planned`: no cloud
-//! deployment is attempted anywhere in this project.
+//! Every `Verified` row means "this runtime passed the local conformance
+//! checks on this machine". The `serverless-cloud` row is always `Planned`:
+//! no cloud deployment is attempted anywhere in this project.
 
 use opurom_runtime_adapters::adapters::{Edge, Embedded, NativeRust, NodeJs};
 use opurom_runtime_adapters::report::{compare, run_checks};

@@ -2,7 +2,7 @@
 name = "opurom-runtime-adapters"
 version = "0.1.0"
 edition = "2021"
-description = "Opurom capability backend runtime adapters and local conformance harness"
+description = "Opurom backend runtime adapters and local conformance harness"
 
 [dependencies]
 serde_json = "1.0.154"
