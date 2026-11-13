@@ -2,7 +2,7 @@
 //! shapes derived from the IR `api` and `models` arrays.
 //!
 //! `MapStore`, `FixedStore` and the Node.js host all implement this same
-//! contract. The conformance suite compares canonical response bytes, so
+//! specification. The conformance suite compares canonical response bytes, so
 //! any semantic drift between runtimes is a test failure.
 //!
 //! Responses follow framework rules: list -> array, create -> row,

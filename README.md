@@ -38,9 +38,10 @@ Each adapter reports what its runtime can do (`Capabilities`):
 | `embedded` | false | false | false | false | 1 MiB |
 
 `max_body` is the 1 MiB request body cap from
-`opurom-examples/the framework implementation` framework rules. `node` reports `async_io` and
-`threads` because it drives a real subprocess with a reader thread; it performs
-no filesystem or network IO of its own.
+the framework implementation
+framework rules. `node` reports `async_io` and `threads` because it drives a real
+subprocess with a reader thread; it performs no filesystem or network IO of its
+own.
 
 ### The embedded budget
 
@@ -84,8 +85,9 @@ HTTP-style `status` and a JSON `body`. `AdapterError` is a value: a missing
 `AdapterError::Timeout`. Neither is a panic.
 
 This is a *backend runtime* ABI. It is distinct from the 0.1.0 `PlatformAdapter`
-ABI in `opurom-examples/the framework implementation`, which describes UI hosts (windowing,
-input, presentation).
+ABI in
+the framework implementation,
+which describes UI hosts (windowing, input, presentation).
 
 ## The conformance report
 
@@ -135,7 +137,9 @@ The checks are derived from the IR, not hard-coded:
 | `delete` | `DELETE /todos/1` | `200 {"deleted":true}` |
 | `not-found` | `GET /todos/1` | `404 {"error":"not_found"}` |
 
-The responses follow `opurom-examples/the framework implementation` framework rules.
+The responses follow
+the framework implementation
+framework rules.
 
 ### Health route
 
@@ -228,7 +232,7 @@ and then deliberately never answers.
 1. Implement `RuntimeAdapter` in `src/adapters/<name>.rs`: `name`,
    `capabilities`, `invoke`, `shutdown`. Errors are values, never panics.
 2. Apply the same business logic from `src/logic.rs` (or implement the same
-   contract in the target language). The conformance suite compares
+   specification in the target language). The conformance suite compares
    canonical response bytes, so the semantics must match exactly.
 3. Return canonical JSON: object keys sorted, no insignificant whitespace.
    `adapters::parse_canonical_body` enforces this on the way in.
