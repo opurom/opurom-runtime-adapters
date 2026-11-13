@@ -1,5 +1,6 @@
 //! Conformance suite: the same sample request set against all four runtimes,
-//! plus a table of error-path and list-order cases checked byte-for-byte.
+//! plus tables of error-path, list-order and content-type cases checked
+//! byte-for-byte.
 //!
 //! The runtimes must produce byte-identical canonical responses, the Node
 //! runtime must fail cleanly when its binary is missing, and the bounded
@@ -309,6 +310,8 @@ const INVALID_FIELD_DONE: &[u8] =
     br#"{"body":{"error":"invalid_field","field":"done"},"status":400}"#;
 const INVALID_FIELD_ID: &[u8] = br#"{"body":{"error":"invalid_field","field":"id"},"status":400}"#;
 const CONFLICT: &[u8] = br#"{"body":{"error":"conflict"},"status":409}"#;
+const UNSUPPORTED_MEDIA_TYPE: &[u8] =
+    br#"{"body":{"error":"unsupported_media_type"},"status":415}"#;
 const EMPTY_LIST: &[u8] = br#"{"body":[],"status":200}"#;
 const CREATED_X: &[u8] = br#"{"body":{"done":false,"id":1,"title":"x"},"status":201}"#;
 const CREATED_Y: &[u8] = br#"{"body":{"done":false,"id":2,"title":"y"},"status":201}"#;
@@ -528,15 +531,15 @@ fn run_requests(adapter: &mut dyn RuntimeAdapter, requests: &[Request]) -> Vec<V
     run(adapter, &checks)
 }
 
-#[test]
-fn all_runtimes_share_the_error_path_and_list_order_bytes() {
-    let ir = todo_ir();
-    let cases = parity_cases();
+/// Run one parity table against all four runtimes: every response must be
+/// byte-identical across runtimes, and each case's last response is pinned to
+/// the exact canonical bytes in `expected`.
+fn assert_cross_runtime_parity(ir: &FullstackIr, cases: &[ParityCase]) {
     let expected_names = ["native", "node", "edge", "embedded"];
 
-    for case in &cases {
+    for case in cases {
         let mut answers: Vec<(String, Vec<Vec<u8>>)> = Vec::new();
-        for mut adapter in parity_adapters(&ir) {
+        for mut adapter in parity_adapters(ir) {
             let bytes = run_requests(adapter.as_mut(), &case.requests);
             let name = adapter.name().to_owned();
             adapter.shutdown().expect("the adapter shuts down");
@@ -561,7 +564,69 @@ fn all_runtimes_share_the_error_path_and_list_order_bytes() {
             case.name
         );
     }
+}
+
+#[test]
+fn all_runtimes_share_the_error_path_and_list_order_bytes() {
+    let ir = todo_ir();
+    let cases = parity_cases();
+    assert_cross_runtime_parity(&ir, &cases);
     assert_eq!(cases.len(), 29);
+}
+
+/// Content-Type handling parity. In this JSON-value ABI a missing body and an
+/// empty body share one wire form (`body: null`), so one case covers both; a
+/// JSON payload answers byte-identically with and without the header.
+fn content_type_cases() -> Vec<ParityCase> {
+    let row = json!({ "title": "x", "done": false });
+    vec![
+        ParityCase {
+            name: "create-json-with-header",
+            requests: vec![post(row.clone()).with_content_type("application/json")],
+            expected: CREATED_X,
+        },
+        ParityCase {
+            name: "create-json-without-header",
+            requests: vec![post(row.clone())],
+            expected: CREATED_X,
+        },
+        ParityCase {
+            name: "create-json-header-with-parameters",
+            requests: vec![post(row.clone()).with_content_type("application/json; charset=utf-8")],
+            expected: CREATED_X,
+        },
+        ParityCase {
+            name: "create-missing-or-empty-body",
+            requests: vec![post(Value::Null)],
+            expected: INVALID_BODY,
+        },
+        ParityCase {
+            name: "create-wrong-content-type",
+            requests: vec![post(row.clone()).with_content_type("text/plain")],
+            expected: UNSUPPORTED_MEDIA_TYPE,
+        },
+        ParityCase {
+            name: "update-wrong-content-type",
+            requests: vec![
+                post(row.clone()),
+                put("/todos/1", json!({ "title": "y" })).with_content_type("text/plain"),
+            ],
+            expected: UNSUPPORTED_MEDIA_TYPE,
+        },
+        ParityCase {
+            name: "get-wrong-content-type",
+            requests: vec![get("/todos").with_content_type("text/plain")],
+            expected: UNSUPPORTED_MEDIA_TYPE,
+        },
+    ]
+}
+
+#[test]
+fn all_runtimes_share_the_content_type_bytes() {
+    let ir = todo_ir();
+    let cases = content_type_cases();
+    assert_cross_runtime_parity(&ir, &cases);
+    assert_eq!(cases.len(), 7);
 }
 
 /// Item route with the key segment first; dispatch then depends on binding by

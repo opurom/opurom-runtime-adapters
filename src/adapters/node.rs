@@ -6,7 +6,7 @@
 //! ```text
 //! -> {"type":"handshake","ir":{...}}
 //! <- {"type":"ready","ok":true}
-//! -> {"type":"invoke","request":{"method":"GET","path":"/todos","body":null}}
+//! -> {"type":"invoke","request":{"method":"GET","path":"/todos","body":null,"contentType":null}}
 //! <- {"type":"response","status":200,"body":"[{\"id\":1}]"}
 //! -> {"type":"shutdown"}
 //! <- {"type":"bye"}

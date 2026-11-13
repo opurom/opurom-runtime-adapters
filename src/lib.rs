@@ -30,11 +30,14 @@ use serde_json::{json, Value};
 use std::fmt;
 
 /// A JSON-shaped request. `body` is `null` for requests without a payload.
+/// `content_type` mirrors the request Content-Type header; `None` means the
+/// header was absent, which every runtime treats as JSON.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Request {
     pub method: String,
     pub path: String,
     pub body: Value,
+    pub content_type: Option<String>,
 }
 
 impl Request {
@@ -43,7 +46,14 @@ impl Request {
             method: method.to_owned(),
             path: path.to_owned(),
             body,
+            content_type: None,
         }
+    }
+
+    /// Set the request Content-Type header, e.g. "application/json".
+    pub fn with_content_type(mut self, content_type: &str) -> Self {
+        self.content_type = Some(content_type.to_owned());
+        self
     }
 
     pub fn to_value(&self) -> Value {
@@ -51,6 +61,7 @@ impl Request {
             "method": self.method,
             "path": self.path,
             "body": self.body,
+            "contentType": self.content_type,
         })
     }
 }

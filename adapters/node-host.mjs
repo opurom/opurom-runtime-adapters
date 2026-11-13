@@ -6,7 +6,7 @@
 //
 //   -> {"type":"handshake","ir":{...}}
 //   <- {"type":"ready","ok":true,"protocol":"opurom-runtime-adapters/1"}
-//   -> {"type":"invoke","request":{"method":"GET","path":"/todos","body":null}}
+//   -> {"type":"invoke","request":{"method":"GET","path":"/todos","body":null,"contentType":null}}
 //   <- {"type":"response","status":200,"body":"[...]"}
 //   -> {"type":"shutdown"}
 //   <- {"type":"bye"}
@@ -152,6 +152,14 @@ function notFound() {
   return { status: 404, body: { error: 'not_found' } };
 }
 
+// The media-type rule shared by every runtime: the base type before any `;`
+// parameters, compared case-insensitively. An absent header is JSON by
+// default; anything else is refused with 415 before route matching.
+function jsonMedia(contentType) {
+  const base = contentType.split(';')[0].trim().toLowerCase();
+  return base === 'application/json';
+}
+
 function invalidBody(field) {
   const body = { error: 'invalid_body' };
   if (field) body.field = field;
@@ -165,6 +173,11 @@ function handle(request) {
 
   if (canonicalJson(requestBody).length > MAX_BODY_BYTES) {
     return { status: 413, body: { error: 'payload_too_large' } };
+  }
+
+  const contentType = typeof request.contentType === 'string' ? request.contentType : null;
+  if (contentType !== null && !jsonMedia(contentType)) {
+    return { status: 415, body: { error: 'unsupported_media_type' } };
   }
 
   const found = findRoute(segments(path));

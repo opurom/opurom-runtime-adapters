@@ -125,6 +125,19 @@ fn invalid_field(field: &str) -> Response {
     Response::new(400, json!({ "error": "invalid_field", "field": field }))
 }
 
+/// The media-type rule shared by every runtime: the base type before any `;`
+/// parameters, compared case-insensitively. An absent header is JSON by
+/// default; anything else is refused with 415 before route matching.
+fn is_json_media(content_type: &str) -> bool {
+    let base = content_type
+        .split(';')
+        .next()
+        .unwrap_or_default()
+        .trim()
+        .to_ascii_lowercase();
+    base == "application/json"
+}
+
 fn build_row(
     model: &IrModel,
     key: &KeyInfo,
@@ -169,6 +182,15 @@ pub fn handle(
         .len();
     if body_len > max_body {
         return Ok(Response::new(413, json!({ "error": "payload_too_large" })));
+    }
+
+    if let Some(content_type) = &req.content_type {
+        if !is_json_media(content_type) {
+            return Ok(Response::new(
+                415,
+                json!({ "error": "unsupported_media_type" }),
+            ));
+        }
     }
 
     let request_segments = segments(&req.path);

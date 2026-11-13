@@ -76,7 +76,9 @@ pub trait RuntimeAdapter {
 }
 ```
 
-`Request` carries `method`, `path` and a JSON `body`. `Response` carries an
+`Request` carries `method`, `path`, a JSON `body` and an optional
+`content_type` (the request Content-Type header; `None` means the header was
+absent). `Response` carries an
 HTTP-style `status` and a JSON `body`. `AdapterError` is a value: a missing
 `node` binary is `AdapterError::HostUnavailable`, a silent host is
 `AdapterError::Timeout`. Neither is a panic.
@@ -149,6 +151,20 @@ List responses are in insertion order on every runtime. The embedded store
 compacts its fixed slots on delete, so reusing a freed slot cannot reorder the
 remaining rows.
 
+### Content-Type handling
+
+A second table-driven case set in `tests/conformance.rs` pins the media-type
+rule to exact bytes on all four runtimes. The rule is identical everywhere and
+is applied before route matching:
+
+- header absent, or `application/json` (case-insensitive, `;` parameters such
+  as `; charset=utf-8` ignored): the body is processed as JSON, so a JSON
+  payload answers byte-identically with and without the header;
+- any other media type: `415 {"error":"unsupported_media_type"}` for every
+  method;
+- a `null` body — the wire form of a missing or empty payload — keeps the
+  `400 {"error":"invalid_body"}` answer for create and update.
+
 ## Path parameters
 
 An API route may declare more than one `:name` segment. Each such segment is
@@ -169,7 +185,8 @@ node --check adapters/node-host.mjs
 
 - `tests/conformance.rs` — the seven sample requests against all four
   runtimes, asserting byte-identical canonical responses; the error-path and
-  list-order table; the exact expected bytes for the documented CRUD answers;
+  list-order table; the content-type table; the exact expected bytes for the
+  documented CRUD answers;
   two-parameter routes dispatching from the named key on all four runtimes;
   a missing `node` binary yielding a clean `AdapterError`; a deliberately
   non-responsive host timing out in under 2 seconds; the embedded runtime
