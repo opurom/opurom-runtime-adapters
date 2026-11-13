@@ -193,6 +193,15 @@ pub fn handle(
         }
     }
 
+    // framework rules: `GET /health` answers with the app identity.
+    // It is fixed and model-independent, so it is answered before route matching.
+    if req.method == "GET" && req.path == "/health" {
+        return Ok(Response::new(
+            200,
+            json!({ "ok": true, "app": ir.app, "version": "0.1.0" }),
+        ));
+    }
+
     let request_segments = segments(&req.path);
     let Some((api, params)) = find_route(ir, &request_segments) else {
         return Ok(not_found());

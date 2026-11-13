@@ -630,6 +630,49 @@ fn all_runtimes_share_the_content_type_bytes() {
     assert_eq!(cases.len(), 7);
 }
 
+/// framework rules pins `GET /health` to the app identity. Every
+/// runtime answers it and the bytes are identical, before route matching, so a
+/// missing `/health` route on any one runtime is a conformance failure.
+const HEALTH: &[u8] = br#"{"body":{"app":"TodoApp","ok":true,"version":"0.1.0"},"status":200}"#;
+
+fn health_cases() -> Vec<ParityCase> {
+    vec![
+        ParityCase {
+            name: "health",
+            requests: vec![get("/health")],
+            expected: HEALTH,
+        },
+        // The health route is answered even when the request body path is not a
+        // declared model route, and the verb stays GET-only.
+        ParityCase {
+            name: "health-then-unknown",
+            requests: vec![get("/health"), get("/__missing__")],
+            expected: NOT_FOUND,
+        },
+        ParityCase {
+            name: "health-rejects-non-get",
+            requests: vec![Request::new("POST", "/health", Value::Null)],
+            expected: NOT_FOUND,
+        },
+    ]
+}
+
+#[test]
+fn all_runtimes_share_the_health_route_bytes() {
+    let ir = todo_ir();
+    let cases = health_cases();
+    // The single-step "health" case must pin the exact contract bytes.
+    let mut native = NativeRust::new(ir.clone());
+    let bytes = native
+        .invoke(&get("/health"))
+        .expect("the adapter answers")
+        .canonical_bytes();
+    assert_eq!(bytes.as_slice(), HEALTH, "health route bytes");
+    native.shutdown().expect("native shuts down");
+    assert_cross_runtime_parity(&ir, &cases);
+    assert_eq!(cases.len(), 3);
+}
+
 /// A body whose compact canonical JSON is exactly `target` bytes: one `a`
 /// moves the count by one, so the cap boundary is reachable precisely.
 fn body_of_canonical_len(target: usize) -> Value {

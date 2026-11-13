@@ -137,6 +137,14 @@ The checks are derived from the IR, not hard-coded:
 
 The responses follow `opurom-examples/the framework implementation` framework rules.
 
+### Health route
+
+`GET /health` answers `200 {"ok":true,"app":"<name>","version":"0.1.0"}` on all
+four runtimes, byte-identically. It is fixed and model-independent, so it is
+answered before route matching and only for `GET`; any other method on
+`/health` falls through to the normal route table and answers 404 when no model
+route matches. The `app` value is the IR's `app` field.
+
 ### Error paths and list order
 
 A table-driven case set in `tests/conformance.rs` runs each case against all
@@ -200,8 +208,8 @@ node --check adapters/node-host.mjs
 
 - `tests/conformance.rs` — the seven sample requests against all four
   runtimes, asserting byte-identical canonical responses; the error-path and
-  list-order table; the content-type table; the body-cap table; the exact
-  expected bytes for the documented CRUD answers;
+  list-order table; the content-type table; the body-cap table; the health-route
+  table; the exact expected bytes for the documented CRUD answers;
   two-parameter routes dispatching from the named key on all four runtimes;
   a missing `node` binary yielding a clean `AdapterError`; a deliberately
   non-responsive host timing out in under 2 seconds; the embedded runtime

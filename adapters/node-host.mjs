@@ -183,6 +183,12 @@ function handle(request) {
     return { status: 415, body: { error: 'unsupported_media_type' } };
   }
 
+  // framework rules: `GET /health` answers with the app identity.
+  // It is fixed and model-independent, so it is answered before route matching.
+  if (method === 'GET' && path === '/health') {
+    return { status: 200, body: { ok: true, app: ir.app, version: '0.1.0' } };
+  }
+
   const found = findRoute(segments(path));
   if (!found) return notFound();
 
