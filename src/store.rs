@@ -300,7 +300,10 @@ impl Store for FixedStore {
         }) else {
             return false;
         };
-        self.slots[index] = Slot::empty();
+        // Compact the used slots so a reused slot lands at the tail and list()
+        // keeps the insertion order of the other stores.
+        self.slots[index..].rotate_left(1);
+        self.slots[MAX_ROWS - 1] = Slot::empty();
         true
     }
 

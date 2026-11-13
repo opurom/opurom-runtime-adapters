@@ -135,6 +135,20 @@ The checks are derived from the IR, not hard-coded:
 
 The responses follow `opurom-examples/the framework implementation` framework rules.
 
+### Error paths and list order
+
+A table-driven case set in `tests/conformance.rs` runs each case against all
+four runtimes and asserts byte-identical canonical responses, pinned to exact
+expected bytes. It covers not-found ids (missing, malformed, non-canonical and
+deleted ids across get, update and delete), invalid payloads (non-object
+bodies, missing fields, wrong field and key types), duplicate ids (explicit
+conflict, auto-assigned ids, reuse after delete), and empty collections (on a
+fresh runtime and after a delete).
+
+List responses are in insertion order on every runtime. The embedded store
+compacts its fixed slots on delete, so reusing a freed slot cannot reorder the
+remaining rows.
+
 ## How to run the conformance suite
 
 ```sh
@@ -146,11 +160,12 @@ node --check adapters/node-host.mjs
 `cargo test` runs:
 
 - `tests/conformance.rs` — the seven sample requests against all four
-  runtimes, asserting byte-identical canonical responses; the exact expected
-  bytes for the documented CRUD answers; a missing `node` binary yielding a
-  clean `AdapterError`; a deliberately non-responsive host timing out in under
-  2 seconds; the embedded runtime refusing to exceed its fixed capacity; and
-  a plain 0.1.0 IR working with an empty model set.
+  runtimes, asserting byte-identical canonical responses; the error-path and
+  list-order table; the exact expected bytes for the documented CRUD answers;
+  a missing `node` binary yielding a clean `AdapterError`; a deliberately
+  non-responsive host timing out in under 2 seconds; the embedded runtime
+  refusing to exceed its fixed capacity; and a plain 0.1.0 IR working with an
+  empty model set.
 - `tests/report.rs` — the report format, the status column, and clean
   failure on a bad IR.
 

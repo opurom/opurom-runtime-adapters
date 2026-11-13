@@ -1,4 +1,5 @@
-//! Conformance suite: the same sample request set against all four runtimes.
+//! Conformance suite: the same sample request set against all four runtimes,
+//! plus a table of error-path and list-order cases checked byte-for-byte.
 //!
 //! The runtimes must produce byte-identical canonical responses, the Node
 //! runtime must fail cleanly when its binary is missing, and the bounded
@@ -287,4 +288,278 @@ fn every_adapter_reports_its_capabilities_and_name() {
     assert_eq!(embedded.name(), "embedded");
     assert!(!embedded.capabilities().threads);
     assert!(!embedded.capabilities().network);
+}
+
+/// One parity case: a request trace run on a fresh adapter. Every response is
+/// compared across all four runtimes; the last one is also pinned to the exact
+/// canonical bytes in `expected`.
+struct ParityCase {
+    name: &'static str,
+    requests: Vec<Request>,
+    expected: &'static [u8],
+}
+
+const NOT_FOUND: &[u8] = br#"{"body":{"error":"not_found"},"status":404}"#;
+const INVALID_BODY: &[u8] = br#"{"body":{"error":"invalid_body"},"status":400}"#;
+const INVALID_BODY_TITLE: &[u8] =
+    br#"{"body":{"error":"invalid_body","field":"title"},"status":400}"#;
+const INVALID_FIELD_TITLE: &[u8] =
+    br#"{"body":{"error":"invalid_field","field":"title"},"status":400}"#;
+const INVALID_FIELD_DONE: &[u8] =
+    br#"{"body":{"error":"invalid_field","field":"done"},"status":400}"#;
+const INVALID_FIELD_ID: &[u8] = br#"{"body":{"error":"invalid_field","field":"id"},"status":400}"#;
+const CONFLICT: &[u8] = br#"{"body":{"error":"conflict"},"status":409}"#;
+const EMPTY_LIST: &[u8] = br#"{"body":[],"status":200}"#;
+const CREATED_X: &[u8] = br#"{"body":{"done":false,"id":1,"title":"x"},"status":201}"#;
+const CREATED_Y: &[u8] = br#"{"body":{"done":false,"id":2,"title":"y"},"status":201}"#;
+const ORDERED_LIST: &[u8] = br#"{"body":[{"done":false,"id":1,"title":"a"},{"done":false,"id":3,"title":"c"},{"done":false,"id":4,"title":"d"}],"status":200}"#;
+const INSERTION_ORDER_LIST: &[u8] = br#"{"body":[{"done":false,"id":9,"title":"b"},{"done":false,"id":3,"title":"a"}],"status":200}"#;
+
+fn get(path: &str) -> Request {
+    Request::new("GET", path, Value::Null)
+}
+
+fn post(body: Value) -> Request {
+    Request::new("POST", "/todos", body)
+}
+
+fn put(path: &str, body: Value) -> Request {
+    Request::new("PUT", path, body)
+}
+
+fn delete(path: &str) -> Request {
+    Request::new("DELETE", path, Value::Null)
+}
+
+/// Error paths (not-found ids, invalid payloads, duplicate ids, empty
+/// collections) and deterministic list order, one case per row.
+fn parity_cases() -> Vec<ParityCase> {
+    let row = json!({ "title": "x", "done": false });
+    vec![
+        // Not-found ids.
+        ParityCase {
+            name: "unknown-route",
+            requests: vec![get("/__missing__")],
+            expected: NOT_FOUND,
+        },
+        ParityCase {
+            name: "get-missing-id",
+            requests: vec![get("/todos/999")],
+            expected: NOT_FOUND,
+        },
+        ParityCase {
+            name: "get-malformed-id",
+            requests: vec![get("/todos/not-a-number")],
+            expected: NOT_FOUND,
+        },
+        ParityCase {
+            name: "get-non-canonical-id",
+            requests: vec![get("/todos/01")],
+            expected: NOT_FOUND,
+        },
+        ParityCase {
+            name: "get-negative-id",
+            requests: vec![get("/todos/-1")],
+            expected: NOT_FOUND,
+        },
+        ParityCase {
+            name: "update-missing-id",
+            requests: vec![put("/todos/999", json!({ "title": "x" }))],
+            expected: NOT_FOUND,
+        },
+        ParityCase {
+            name: "delete-missing-id",
+            requests: vec![delete("/todos/999")],
+            expected: NOT_FOUND,
+        },
+        ParityCase {
+            name: "get-after-delete",
+            requests: vec![post(row.clone()), delete("/todos/1"), get("/todos/1")],
+            expected: NOT_FOUND,
+        },
+        ParityCase {
+            name: "delete-twice",
+            requests: vec![post(row.clone()), delete("/todos/1"), delete("/todos/1")],
+            expected: NOT_FOUND,
+        },
+        // Invalid payloads.
+        ParityCase {
+            name: "create-null-body",
+            requests: vec![post(Value::Null)],
+            expected: INVALID_BODY,
+        },
+        ParityCase {
+            name: "create-array-body",
+            requests: vec![post(json!([]))],
+            expected: INVALID_BODY,
+        },
+        ParityCase {
+            name: "create-string-body",
+            requests: vec![post(json!("nope"))],
+            expected: INVALID_BODY,
+        },
+        ParityCase {
+            name: "create-number-body",
+            requests: vec![post(json!(7))],
+            expected: INVALID_BODY,
+        },
+        ParityCase {
+            name: "create-bool-body",
+            requests: vec![post(json!(true))],
+            expected: INVALID_BODY,
+        },
+        ParityCase {
+            name: "create-empty-object",
+            requests: vec![post(json!({}))],
+            expected: INVALID_BODY_TITLE,
+        },
+        ParityCase {
+            name: "create-missing-field",
+            requests: vec![post(json!({ "done": false }))],
+            expected: INVALID_BODY_TITLE,
+        },
+        ParityCase {
+            name: "create-wrong-field-type",
+            requests: vec![post(json!({ "title": 5, "done": false }))],
+            expected: INVALID_FIELD_TITLE,
+        },
+        ParityCase {
+            name: "create-wrong-bool-type",
+            requests: vec![post(json!({ "title": "x", "done": 1 }))],
+            expected: INVALID_FIELD_DONE,
+        },
+        ParityCase {
+            name: "create-wrong-key-type",
+            requests: vec![post(json!({ "id": "x", "title": "x" }))],
+            expected: INVALID_FIELD_ID,
+        },
+        ParityCase {
+            name: "update-null-body",
+            requests: vec![post(row.clone()), put("/todos/1", Value::Null)],
+            expected: INVALID_BODY,
+        },
+        ParityCase {
+            name: "update-array-body",
+            requests: vec![post(row.clone()), put("/todos/1", json!([]))],
+            expected: INVALID_BODY,
+        },
+        ParityCase {
+            name: "update-wrong-field-type",
+            requests: vec![post(row.clone()), put("/todos/1", json!({ "title": 5 }))],
+            expected: INVALID_FIELD_TITLE,
+        },
+        // Duplicate ids.
+        ParityCase {
+            name: "duplicate-explicit-id",
+            requests: vec![
+                post(json!({ "id": 1, "title": "x" })),
+                post(json!({ "id": 1, "title": "y" })),
+            ],
+            expected: CONFLICT,
+        },
+        ParityCase {
+            name: "duplicate-auto-id",
+            requests: vec![post(row.clone()), post(json!({ "title": "y" }))],
+            expected: CREATED_Y,
+        },
+        ParityCase {
+            name: "recreate-deleted-id",
+            requests: vec![
+                post(json!({ "id": 1, "title": "x" })),
+                delete("/todos/1"),
+                post(json!({ "id": 1, "title": "x" })),
+            ],
+            expected: CREATED_X,
+        },
+        // Empty collections.
+        ParityCase {
+            name: "empty-list",
+            requests: vec![get("/todos")],
+            expected: EMPTY_LIST,
+        },
+        ParityCase {
+            name: "empty-list-after-delete",
+            requests: vec![post(row), delete("/todos/1"), get("/todos")],
+            expected: EMPTY_LIST,
+        },
+        // Deterministic list order: embedded must reuse a freed slot at the
+        // tail, and no runtime may sort rows by key.
+        ParityCase {
+            name: "list-order-after-slot-reuse",
+            requests: vec![
+                post(json!({ "id": 2, "title": "b" })),
+                post(json!({ "id": 1, "title": "a" })),
+                post(json!({ "id": 3, "title": "c" })),
+                delete("/todos/2"),
+                post(json!({ "id": 4, "title": "d" })),
+                get("/todos"),
+            ],
+            expected: ORDERED_LIST,
+        },
+        ParityCase {
+            name: "list-order-is-insertion-order",
+            requests: vec![
+                post(json!({ "id": 9, "title": "b" })),
+                post(json!({ "id": 3, "title": "a" })),
+                get("/todos"),
+            ],
+            expected: INSERTION_ORDER_LIST,
+        },
+    ]
+}
+
+fn parity_adapters(ir: &FullstackIr) -> Vec<Box<dyn RuntimeAdapter>> {
+    vec![
+        Box::new(NativeRust::new(ir.clone())),
+        Box::new(NodeJs::new(ir.clone())),
+        Box::new(Edge::new(ir.clone())),
+        Box::new(Embedded::new(ir.clone())),
+    ]
+}
+
+fn run_requests(adapter: &mut dyn RuntimeAdapter, requests: &[Request]) -> Vec<Vec<u8>> {
+    let checks: Vec<Check> = requests
+        .iter()
+        .map(|request| Check {
+            name: String::new(),
+            request: request.clone(),
+        })
+        .collect();
+    run(adapter, &checks)
+}
+
+#[test]
+fn all_runtimes_share_the_error_path_and_list_order_bytes() {
+    let ir = todo_ir();
+    let cases = parity_cases();
+    let expected_names = ["native", "node", "edge", "embedded"];
+
+    for case in &cases {
+        let mut answers: Vec<(String, Vec<Vec<u8>>)> = Vec::new();
+        for mut adapter in parity_adapters(&ir) {
+            let bytes = run_requests(adapter.as_mut(), &case.requests);
+            let name = adapter.name().to_owned();
+            adapter.shutdown().expect("the adapter shuts down");
+            answers.push((name, bytes));
+        }
+        let names: Vec<&str> = answers.iter().map(|(name, _)| name.as_str()).collect();
+        assert_eq!(names, expected_names);
+
+        let reference = &answers[0].1;
+        for (name, bytes) in &answers[1..] {
+            assert_eq!(
+                bytes, reference,
+                "{name} differs from native for case {}",
+                case.name
+            );
+        }
+        let last = reference.last().expect("every case has a final response");
+        assert_eq!(
+            last.as_slice(),
+            case.expected,
+            "wrong bytes for case {}",
+            case.name
+        );
+    }
+    assert_eq!(cases.len(), 29);
 }
