@@ -5,9 +5,9 @@
 //!
 //! ```text
 //! -> {"type":"handshake","ir":{...}}
-//! <- {"type":"ready","ok":true}
+//! <- {"type":"ready","ok":true,"protocol":"opurom-runtime-adapters/2"}
 //! -> {"type":"invoke","request":{"method":"GET","path":"/todos","body":null,"contentType":null}}
-//! <- {"type":"response","status":200,"body":"[{\"id\":1}]"}
+//! <- {"type":"response","status":200,"body":"[{\"id\":1}]","headers":{"content-type":"application/json"}}
 //! -> {"type":"shutdown"}
 //! <- {"type":"bye"}
 //! ```
@@ -18,6 +18,7 @@
 use crate::ir::FullstackIr;
 use crate::{AdapterError, Capabilities, Request, Response, RuntimeAdapter};
 use serde_json::{json, Value};
+use std::collections::BTreeMap;
 use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
 use std::process::{Child, ChildStdin, Command, Stdio};
@@ -27,6 +28,13 @@ use std::time::Duration;
 
 /// Default bound for one runtime round trip.
 pub const DEFAULT_TIMEOUT_MS: u64 = 1000;
+
+/// Protocol id the host must echo in its ready frame. Bumped with the frame
+/// schema: response frames carry required `headers` since /2. The id is
+/// asserted at the handshake because the host script is read from disk at
+/// runtime, so a stale script must fail fast instead of silently dropping
+/// frame fields.
+pub const HOST_PROTOCOL: &str = "opurom-runtime-adapters/2";
 
 /// Grace period given to the host to answer the shutdown message.
 const SHUTDOWN_GRACE_MS: u64 = 200;
@@ -211,7 +219,15 @@ impl NodeJs {
 
         self.send(&json!({ "type": "handshake", "ir": self.ir.to_value() }))?;
         match self.read_message(self.config.timeout_ms)? {
-            Some(message) if message.get("type").and_then(Value::as_str) == Some("ready") => Ok(()),
+            Some(message) if message.get("type").and_then(Value::as_str) == Some("ready") => {
+                let protocol = message.get("protocol").and_then(Value::as_str);
+                if protocol != Some(HOST_PROTOCOL) {
+                    return Err(AdapterError::Protocol(format!(
+                        "host protocol mismatch: expected {HOST_PROTOCOL}, got {protocol:?}"
+                    )));
+                }
+                Ok(())
+            }
             Some(message) => Err(AdapterError::Protocol(format!(
                 "handshake refused by host: {message}"
             ))),
@@ -271,7 +287,25 @@ impl RuntimeAdapter for NodeJs {
             .and_then(Value::as_str)
             .ok_or_else(|| AdapterError::Protocol("host response has no string body".into()))?;
         let body = super::parse_canonical_body(body_text)?;
-        Ok(Response::new(status as u16, body))
+        let frame_headers = message
+            .get("headers")
+            .ok_or_else(|| AdapterError::Protocol("host response has no header map".into()))?
+            .as_object()
+            .ok_or_else(|| {
+                AdapterError::Protocol("host response headers are not an object".into())
+            })?;
+        let mut headers = BTreeMap::new();
+        for (name, value) in frame_headers {
+            let text = value
+                .as_str()
+                .ok_or_else(|| AdapterError::Protocol(format!("header {name} is not a string")))?;
+            headers.insert(name.clone(), text.to_owned());
+        }
+        Ok(Response {
+            status: status as u16,
+            body,
+            headers,
+        })
     }
 
     fn shutdown(&mut self) -> Result<(), AdapterError> {

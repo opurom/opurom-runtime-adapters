@@ -79,9 +79,10 @@ pub trait RuntimeAdapter {
 
 `Request` carries `method`, `path`, a JSON `body` and an optional
 `content_type` (the request Content-Type header; `None` means the header was
-absent). `Response` carries an
-HTTP-style `status` and a JSON `body`. `AdapterError` is a value: a missing
-`node` binary is `AdapterError::HostUnavailable`, a silent host is
+absent). `Response` carries an HTTP-style `status`, a JSON `body` and a
+lowercased header map stamped with `content-type: application/json` by every
+runtime. `AdapterError` is a value: a missing `node` binary is
+`AdapterError::HostUnavailable`, a silent host is
 `AdapterError::Timeout`. Neither is a panic.
 
 This is a *backend runtime* ABI. It is distinct from the 0.1.0 `PlatformAdapter`
@@ -183,6 +184,9 @@ A second table-driven case set in `tests/conformance.rs` pins the media-type
 rule to exact bytes on all four runtimes. The rule is identical everywhere and
 is applied before route matching:
 
+- Every response answers with the `content-type: application/json` header,
+  stamped by each runtime's response builder and pinned in the conformance
+  bytes.
 - header absent, or `application/json` (case-insensitive, `;` parameters such
   as `; charset=utf-8` ignored): the body is processed as JSON, so a JSON
   payload answers byte-identically with and without the header;
@@ -190,6 +194,10 @@ is applied before route matching:
   method;
 - a `null` body — the wire form of a missing or empty payload — keeps the
   `400 {"error":"invalid_body"}` answer for create and update.
+
+Every response also *carries* the response header `content-type:
+application/json`; it is part of the canonical response bytes, stamped once by
+`Response::new` on each side.
 
 ### Request body cap
 
@@ -227,8 +235,9 @@ node --check adapters/node-host.mjs
 - `tests/conformance.rs` — the seven sample requests against all four
   runtimes, asserting byte-identical canonical responses; the error-path and
   list-order table; the content-type table; the method-dispatch table; the
-  body-cap table; the health-route table; the exact expected bytes for the
-  documented CRUD answers;
+  body-cap table; the health-route table; a response content-type header test;
+  a stale-protocol host refused at the handshake; the exact expected bytes for
+  the documented CRUD answers;
   two-parameter routes dispatching from the named key on all four runtimes;
   a missing `node` binary yielding a clean `AdapterError`; a deliberately
   non-responsive host timing out in under 2 seconds; the embedded runtime

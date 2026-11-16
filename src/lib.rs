@@ -66,16 +66,27 @@ impl Request {
     }
 }
 
-/// A JSON-shaped response: an HTTP-style status plus a JSON body.
+/// A JSON-shaped response: an HTTP-style status, a JSON body and a header map.
+///
+/// Header names are lowercase and `BTreeMap` keeps them sorted, so the map has
+/// one canonical spelling. [`Response::new`] stamps every response with
+/// `content-type: application/json`.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Response {
     pub status: u16,
     pub body: Value,
+    pub headers: std::collections::BTreeMap<String, String>,
 }
 
 impl Response {
     pub fn new(status: u16, body: Value) -> Self {
-        Self { status, body }
+        let mut headers = std::collections::BTreeMap::new();
+        headers.insert("content-type".to_owned(), "application/json".to_owned());
+        Self {
+            status,
+            body,
+            headers,
+        }
     }
 
     /// Canonical wire form used for byte comparisons.
@@ -88,9 +99,12 @@ impl Response {
         // Serializing a well-formed serde_json::Value cannot fail.
         let body =
             serde_json::to_vec(&self.body).expect("serde_json::Value is always serializable");
-        let mut out = Vec::with_capacity(body.len() + 24);
+        let headers = serde_json::to_vec(&self.headers).expect("a BTreeMap always serializes");
+        let mut out = Vec::with_capacity(body.len() + headers.len() + 40);
         out.extend_from_slice(b"{\"body\":");
         out.extend_from_slice(&body);
+        out.extend_from_slice(b",\"headers\":");
+        out.extend_from_slice(&headers);
         out.extend_from_slice(format!(",\"status\":{}}}", self.status).as_bytes());
         out
     }

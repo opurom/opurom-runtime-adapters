@@ -5,9 +5,9 @@
 // line-delimited JSON over stdin/stdout:
 //
 //   -> {"type":"handshake","ir":{...}}
-//   <- {"type":"ready","ok":true,"protocol":"opurom-runtime-adapters/1"}
+//   <- {"type":"ready","ok":true,"protocol":"opurom-runtime-adapters/2"}
 //   -> {"type":"invoke","request":{"method":"GET","path":"/todos","body":null,"contentType":null}}
-//   <- {"type":"response","status":200,"body":"[...]"}
+//   <- {"type":"response","status":200,"body":"[...]","headers":{"content-type":"application/json"}}
 //   -> {"type":"shutdown"}
 //   <- {"type":"bye"}
 //
@@ -17,7 +17,10 @@
 import readline from 'node:readline';
 
 const MAX_BODY_BYTES = 1024 * 1024;
-const PROTOCOL = 'opurom-runtime-adapters/1';
+// Frame schema v2: response frames carry a required `headers` map. The
+// protocol id is asserted by the Rust side at the handshake, so a stale copy
+// of this script fails fast instead of silently dropping frame fields.
+const PROTOCOL = 'opurom-runtime-adapters/2';
 
 let ir = { app: '', models: [], api: [] };
 /** model name -> Map(key -> row) */
@@ -196,7 +199,15 @@ function invalidBody(field) {
   return { status: 400, body };
 }
 
+// The response builder: every JSON response carries the normative
+// `content-type`, mirroring `Response::new` on the Rust side.
 function handle(request) {
+  const response = serve(request);
+  response.headers = { 'content-type': 'application/json' };
+  return response;
+}
+
+function serve(request) {
   const method = String(request.method || '');
   const path = String(request.path || '');
   const requestBody = request.body === undefined ? null : request.body;
@@ -338,6 +349,7 @@ rl.on('line', (line) => {
         type: 'response',
         status: response.status,
         body: canonicalJson(response.body),
+        headers: response.headers,
       });
       return;
     }

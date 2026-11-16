@@ -13,6 +13,7 @@ use opurom_runtime_adapters::{
     sample_checks, AdapterError, Check, FullstackIr, Request, RuntimeAdapter, MAX_BODY_BYTES,
 };
 use serde_json::{json, Value};
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 fn todo_ir() -> FullstackIr {
@@ -114,7 +115,10 @@ fn the_conformance_bytes_are_the_documented_crud_answers() {
         .invoke(&checks[0].request)
         .expect("list answers")
         .canonical_bytes();
-    assert_eq!(empty, br#"{"body":[],"status":200}"#.to_vec());
+    assert_eq!(
+        empty,
+        br#"{"body":[],"headers":{"content-type":"application/json"},"status":200}"#.to_vec()
+    );
 
     let created = native
         .invoke(&checks[1].request)
@@ -122,7 +126,7 @@ fn the_conformance_bytes_are_the_documented_crud_answers() {
         .canonical_bytes();
     assert_eq!(
         created,
-        br#"{"body":{"done":false,"id":1,"title":"sample"},"status":201}"#.to_vec()
+        br#"{"body":{"done":false,"id":1,"title":"sample"},"headers":{"content-type":"application/json"},"status":201}"#.to_vec()
     );
 
     let one = native
@@ -131,7 +135,7 @@ fn the_conformance_bytes_are_the_documented_crud_answers() {
         .canonical_bytes();
     assert_eq!(
         one,
-        br#"{"body":[{"done":false,"id":1,"title":"sample"}],"status":200}"#.to_vec()
+        br#"{"body":[{"done":false,"id":1,"title":"sample"}],"headers":{"content-type":"application/json"},"status":200}"#.to_vec()
     );
 
     let deleted = native
@@ -140,7 +144,8 @@ fn the_conformance_bytes_are_the_documented_crud_answers() {
         .canonical_bytes();
     assert_eq!(
         deleted,
-        br#"{"body":{"deleted":true},"status":200}"#.to_vec()
+        br#"{"body":{"deleted":true},"headers":{"content-type":"application/json"},"status":200}"#
+            .to_vec()
     );
 
     let missing = native
@@ -149,7 +154,7 @@ fn the_conformance_bytes_are_the_documented_crud_answers() {
         .canonical_bytes();
     assert_eq!(
         missing,
-        br#"{"body":{"error":"not_found"},"status":404}"#.to_vec()
+        br#"{"body":{"error":"not_found"},"headers":{"content-type":"application/json"},"status":404}"#.to_vec()
     );
 }
 
@@ -170,7 +175,7 @@ fn a_plain_v01_ir_still_works_with_an_empty_model_set() {
     assert_eq!(node_bytes, expected);
     assert_eq!(
         expected[0],
-        br#"{"body":{"error":"not_found"},"status":404}"#.to_vec()
+        br#"{"body":{"error":"not_found"},"headers":{"content-type":"application/json"},"status":404}"#.to_vec()
     );
 }
 
@@ -300,25 +305,28 @@ struct ParityCase {
     expected: &'static [u8],
 }
 
-const NOT_FOUND: &[u8] = br#"{"body":{"error":"not_found"},"status":404}"#;
-const INVALID_BODY: &[u8] = br#"{"body":{"error":"invalid_body"},"status":400}"#;
+const NOT_FOUND: &[u8] =
+    br#"{"body":{"error":"not_found"},"headers":{"content-type":"application/json"},"status":404}"#;
+const INVALID_BODY: &[u8] = br#"{"body":{"error":"invalid_body"},"headers":{"content-type":"application/json"},"status":400}"#;
 const INVALID_BODY_TITLE: &[u8] =
-    br#"{"body":{"error":"invalid_body","field":"title"},"status":400}"#;
+    br#"{"body":{"error":"invalid_body","field":"title"},"headers":{"content-type":"application/json"},"status":400}"#;
 const INVALID_FIELD_TITLE: &[u8] =
-    br#"{"body":{"error":"invalid_field","field":"title"},"status":400}"#;
+    br#"{"body":{"error":"invalid_field","field":"title"},"headers":{"content-type":"application/json"},"status":400}"#;
 const INVALID_FIELD_DONE: &[u8] =
-    br#"{"body":{"error":"invalid_field","field":"done"},"status":400}"#;
-const INVALID_FIELD_ID: &[u8] = br#"{"body":{"error":"invalid_field","field":"id"},"status":400}"#;
-const CONFLICT: &[u8] = br#"{"body":{"error":"conflict"},"status":409}"#;
+    br#"{"body":{"error":"invalid_field","field":"done"},"headers":{"content-type":"application/json"},"status":400}"#;
+const INVALID_FIELD_ID: &[u8] = br#"{"body":{"error":"invalid_field","field":"id"},"headers":{"content-type":"application/json"},"status":400}"#;
+const CONFLICT: &[u8] =
+    br#"{"body":{"error":"conflict"},"headers":{"content-type":"application/json"},"status":409}"#;
 const UNSUPPORTED_MEDIA_TYPE: &[u8] =
-    br#"{"body":{"error":"unsupported_media_type"},"status":415}"#;
-const METHOD_NOT_ALLOWED: &[u8] = br#"{"body":{"error":"method_not_allowed"},"status":405}"#;
-const EMPTY_LIST: &[u8] = br#"{"body":[],"status":200}"#;
-const PAYLOAD_TOO_LARGE: &[u8] = br#"{"body":{"error":"payload_too_large"},"status":413}"#;
-const CREATED_X: &[u8] = br#"{"body":{"done":false,"id":1,"title":"x"},"status":201}"#;
-const CREATED_Y: &[u8] = br#"{"body":{"done":false,"id":2,"title":"y"},"status":201}"#;
-const ORDERED_LIST: &[u8] = br#"{"body":[{"done":false,"id":1,"title":"a"},{"done":false,"id":3,"title":"c"},{"done":false,"id":4,"title":"d"}],"status":200}"#;
-const INSERTION_ORDER_LIST: &[u8] = br#"{"body":[{"done":false,"id":9,"title":"b"},{"done":false,"id":3,"title":"a"}],"status":200}"#;
+    br#"{"body":{"error":"unsupported_media_type"},"headers":{"content-type":"application/json"},"status":415}"#;
+const METHOD_NOT_ALLOWED: &[u8] = br#"{"body":{"error":"method_not_allowed"},"headers":{"content-type":"application/json"},"status":405}"#;
+const EMPTY_LIST: &[u8] =
+    br#"{"body":[],"headers":{"content-type":"application/json"},"status":200}"#;
+const PAYLOAD_TOO_LARGE: &[u8] = br#"{"body":{"error":"payload_too_large"},"headers":{"content-type":"application/json"},"status":413}"#;
+const CREATED_X: &[u8] = br#"{"body":{"done":false,"id":1,"title":"x"},"headers":{"content-type":"application/json"},"status":201}"#;
+const CREATED_Y: &[u8] = br#"{"body":{"done":false,"id":2,"title":"y"},"headers":{"content-type":"application/json"},"status":201}"#;
+const ORDERED_LIST: &[u8] = br#"{"body":[{"done":false,"id":1,"title":"a"},{"done":false,"id":3,"title":"c"},{"done":false,"id":4,"title":"d"}],"headers":{"content-type":"application/json"},"status":200}"#;
+const INSERTION_ORDER_LIST: &[u8] = br#"{"body":[{"done":false,"id":9,"title":"b"},{"done":false,"id":3,"title":"a"}],"headers":{"content-type":"application/json"},"status":200}"#;
 
 fn get(path: &str) -> Request {
     Request::new("GET", path, Value::Null)
@@ -634,7 +642,7 @@ fn all_runtimes_share_the_content_type_bytes() {
 /// framework rules pins `GET /health` to the app identity. Every
 /// runtime answers it and the bytes are identical, before route matching, so a
 /// missing `/health` route on any one runtime is a conformance failure.
-const HEALTH: &[u8] = br#"{"body":{"app":"TodoApp","ok":true,"version":"0.1.0"},"status":200}"#;
+const HEALTH: &[u8] = br#"{"body":{"app":"TodoApp","ok":true,"version":"0.1.0"},"headers":{"content-type":"application/json"},"status":200}"#;
 
 fn health_cases() -> Vec<ParityCase> {
     vec![
@@ -744,7 +752,7 @@ fn method_dispatch_cases() -> Vec<ParityCase> {
     ]
 }
 
-const GET_HEAD_ROW_X: &[u8] = br#"{"body":{"done":false,"id":1,"title":"x"},"status":200}"#;
+const GET_HEAD_ROW_X: &[u8] = br#"{"body":{"done":false,"id":1,"title":"x"},"headers":{"content-type":"application/json"},"status":200}"#;
 
 #[test]
 fn all_runtimes_share_the_method_dispatch_bytes() {
@@ -752,6 +760,54 @@ fn all_runtimes_share_the_method_dispatch_bytes() {
     let cases = method_dispatch_cases();
     assert_cross_runtime_parity(&ir, &cases);
     assert_eq!(cases.len(), 11);
+}
+
+/// Every response on every runtime carries the normative JSON content type,
+/// stamped once by each side's response builder.
+#[test]
+fn every_response_carries_json_content_type() {
+    let ir = todo_ir();
+    let requests = vec![
+        get("/todos"),
+        post(json!({ "title": "x", "done": false })),
+        get("/todos/999"),
+        Request::new("PATCH", "/todos", Value::Null),
+        get("/health"),
+    ];
+    let mut expected = BTreeMap::new();
+    expected.insert("content-type".to_owned(), "application/json".to_owned());
+
+    for mut adapter in parity_adapters(&ir) {
+        let name = adapter.name().to_owned();
+        for request in &requests {
+            let response = adapter
+                .invoke(request)
+                .unwrap_or_else(|error| panic!("{name} failed on {}: {error}", request.path));
+            assert_eq!(response.headers, expected, "{name} on {}", request.path);
+        }
+        adapter.shutdown().expect("the adapter shuts down");
+    }
+}
+
+/// A host whose frame schema is stale is refused at the handshake instead of
+/// silently answering with missing frame fields.
+#[test]
+fn a_stale_protocol_host_is_refused_at_the_handshake() {
+    let ir = todo_ir();
+    let stub = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/stale-host.mjs");
+    let config = NodeConfig::new(stub).with_timeout_ms(400);
+    let mut node = NodeJs::with_config(ir, config);
+    let checks = sample_checks(&todo_ir());
+
+    let error = node
+        .invoke(&checks[0].request)
+        .expect_err("a stale protocol cannot be accepted");
+    match &error {
+        AdapterError::Protocol(why) => assert!(why.contains("protocol mismatch"), "{why}"),
+        other => panic!("expected a protocol error, got {other:?}"),
+    }
+    node.shutdown()
+        .expect("shutdown after a refused handshake is clean");
 }
 
 /// A body whose compact canonical JSON is exactly `target` bytes: one `a`
@@ -849,9 +905,10 @@ fn nested_ir() -> FullstackIr {
     FullstackIr::from_value(&value).expect("the nested IR parses")
 }
 
-const NESTED_ROW_X: &[u8] = br#"{"body":{"done":false,"id":1,"title":"x"},"status":200}"#;
-const NESTED_ROW_Y: &[u8] = br#"{"body":{"done":false,"id":1,"title":"y"},"status":200}"#;
-const NESTED_DELETED: &[u8] = br#"{"body":{"deleted":true},"status":200}"#;
+const NESTED_ROW_X: &[u8] = br#"{"body":{"done":false,"id":1,"title":"x"},"headers":{"content-type":"application/json"},"status":200}"#;
+const NESTED_ROW_Y: &[u8] = br#"{"body":{"done":false,"id":1,"title":"y"},"headers":{"content-type":"application/json"},"status":200}"#;
+const NESTED_DELETED: &[u8] =
+    br#"{"body":{"deleted":true},"headers":{"content-type":"application/json"},"status":200}"#;
 
 fn nested_trace() -> Vec<Request> {
     vec![
