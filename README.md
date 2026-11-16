@@ -211,6 +211,27 @@ Without configuration `OPTIONS` stays an ordinary routed method answering
 `405`, pinned by the method-dispatch suite, and no response carries CORS
 headers.
 
+### Authentication
+
+Bearer authentication is operator configuration like CORS: `LayerOptions`
+carries an `auth_token` (default off, mirroring an unset `OPR_AUTH_TOKEN`) and
+the node host receives it in the handshake frame's `options` section.
+
+With a token configured, the behavior mirrors the framework's gate:
+
+- every request must carry `Authorization: Bearer <token>`; a missing or
+  mismatched token, or a non-`Bearer` scheme, answers
+  `401 {"error":"unauthorized"}`;
+- the scheme comparison is case-insensitive, and the token comparison is
+  constant time in the lengths (both sides digest to a fixed width and
+  XOR-accumulate without an early exit);
+- `GET /health` is exempt, and a CORS preflight bypasses the gate;
+- the `401` still walks the response stages, so it carries the JSON content
+  type and, under CORS, the origin header.
+
+This is a development token, not a production identity system: there are no
+users, scopes, expiry or credential storage.
+
 ### Error paths and list order
 
 A table-driven case set in `tests/conformance.rs` runs each case against all

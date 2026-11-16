@@ -4,7 +4,7 @@
 // IR `models`/`api` arrays handed over during the handshake, and speaks
 // line-delimited JSON over stdin/stdout:
 //
-//   -> {"type":"handshake","ir":{...},"options":{"corsOrigin":null}}
+//   -> {"type":"handshake","ir":{...},"options":{"corsOrigin":null,"authToken":null}}
 //   <- {"type":"ready","ok":true,"protocol":"opurom-runtime-adapters/4"}
 //   -> {"type":"invoke","request":{"method":"GET","path":"/todos","body":null,"contentType":null,"headers":{}}}
 //   <- {"type":"response","status":200,"body":"[...]","headers":{"content-type":"application/json"}}
@@ -14,6 +14,7 @@
 // The `body` field is a canonical JSON *string*: object keys sorted, no
 // insignificant whitespace. That is the byte form the Rust side compares.
 
+import { createHash } from 'node:crypto';
 import readline from 'node:readline';
 
 const MAX_BODY_BYTES = 1024 * 1024;
@@ -76,7 +77,7 @@ function acceptsGzip(headers) {
 let ir = { app: '', models: [], api: [] };
 // Operator layer options handed over in the handshake frame; every field
 // defaults to off, mirroring the framework's environment defaults.
-let layerOptions = { corsOrigin: null };
+let layerOptions = { corsOrigin: null, authToken: null };
 /** model name -> Map(key -> row) */
 const tables = new Map();
 
@@ -285,12 +286,16 @@ function invalidBody(field) {
 // already attached (the `Allow` list on a 405) are kept. The ETag stage runs
 // after the stamp, mirroring the framework's stage order.
 function handle(request) {
-  // The preflight answer bypasses routing entirely (mirroring the framework,
-  // where it also bypasses auth), and every answer then walks the response
-  // stages in the framework's fixed order: CORS before ETag.
+  // The preflight answer bypasses routing and auth entirely (mirroring the
+  // framework), authentication gates everything else before routing, and every
+  // answer then walks the response stages in the framework's fixed order: CORS
+  // before ETag.
   const origin = layerOptions.corsOrigin;
-  if (origin !== null && String(request.method || '') === 'OPTIONS') {
-    return {
+  const method = String(request.method || '');
+  const headers = requestHeaders(request);
+  let response;
+  if (origin !== null && method === 'OPTIONS') {
+    response = {
       status: 204,
       body: null,
       headers: {
@@ -300,11 +305,50 @@ function handle(request) {
         vary: 'Origin',
       },
     };
+  } else if (!authExempt(request) && !authAuthorized(headers)) {
+    response = { status: 401, body: { error: 'unauthorized' } };
+    response.headers = { ...response.headers, 'content-type': 'application/json' };
+  } else {
+    response = serve(request);
+    response.headers = { ...response.headers, 'content-type': 'application/json' };
   }
-  const response = serve(request);
-  response.headers = { ...response.headers, 'content-type': 'application/json' };
   stageCors(response);
-  return stageEtag(response, requestHeaders(request), String(request.method || ''));
+  return stageEtag(response, headers, method);
+}
+
+// True when the request may skip the token check: authentication is disabled,
+// or the request is `GET /health`, mirroring the framework.
+function authExempt(request) {
+  if (layerOptions.authToken === null) return true;
+  return String(request.method || '') === 'GET' && String(request.path || '') === '/health';
+}
+
+// True when the request carries a matching `Authorization: Bearer` value,
+// compared in time that depends only on the lengths (mirroring the framework's
+// digest-then-XOR gate).
+function authAuthorized(headers) {
+  const token = layerOptions.authToken;
+  if (token === null) return true;
+  const raw = headers.authorization;
+  if (typeof raw !== 'string') return false;
+  const space = raw.indexOf(' ');
+  if (space < 0) return false;
+  const scheme = raw.slice(0, space);
+  const candidate = raw.slice(space + 1);
+  if (scheme.toLowerCase() !== 'bearer') return false;
+  return constantTimeEq(candidate, token);
+}
+
+// Compare two byte strings in time that depends only on their lengths,
+// mirroring the framework's `constant_time_eq`: both sides digest to a fixed
+// width with SHA-256 and XOR-accumulate without an early exit, and the length
+// mismatch is folded into the verdict so unequal-length tokens stay rejected.
+function constantTimeEq(expected, provided) {
+  const left = createHash('sha256').update(Buffer.from(expected, 'utf8')).digest();
+  const right = createHash('sha256').update(Buffer.from(provided, 'utf8')).digest();
+  let difference = Buffer.byteLength(expected, 'utf8') ^ Buffer.byteLength(provided, 'utf8');
+  for (let i = 0; i < left.length; i += 1) difference |= left[i] ^ right[i];
+  return difference === 0;
 }
 
 // Stage 2 of the response pipeline, mirroring the framework: a configured
@@ -519,6 +563,7 @@ rl.on('line', (line) => {
       const raw = message.options && typeof message.options === 'object' ? message.options : {};
       layerOptions = {
         corsOrigin: typeof raw.corsOrigin === 'string' ? raw.corsOrigin : null,
+        authToken: typeof raw.authToken === 'string' ? raw.authToken : null,
       };
       tables.clear();
       write({ type: 'ready', ok: true, protocol: PROTOCOL });

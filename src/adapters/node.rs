@@ -4,7 +4,7 @@
 //! logic as the Rust adapters and speaks line-delimited JSON over stdin/stdout:
 //!
 //! ```text
-//! -> {"type":"handshake","ir":{...},"options":{"corsOrigin":null}}
+//! -> {"type":"handshake","ir":{...},"options":{"corsOrigin":null,"authToken":null}}
 //! <- {"type":"ready","ok":true,"protocol":"opurom-runtime-adapters/4"}
 //! -> {"type":"invoke","request":{"method":"GET","path":"/todos","body":null,"contentType":null,"headers":{}}}
 //! <- {"type":"response","status":200,"body":"[{\"id\":1}]","headers":{"content-type":"application/json"}}
@@ -32,7 +32,7 @@ pub const DEFAULT_TIMEOUT_MS: u64 = 1000;
 /// Protocol id the host must echo in its ready frame. Bumped with the frame
 /// schema: response frames carry required `headers` since /2, request frames
 /// carry required `headers` since /3 and the handshake carries the optional
-/// `options` section since /4. The id is asserted at the handshake
+/// `options` section (CORS origin, bearer token) since /4. The id is asserted at the handshake
 /// because the host script is read from disk at runtime, so a stale script
 /// must fail fast instead of silently dropping frame fields.
 pub const HOST_PROTOCOL: &str = "opurom-runtime-adapters/4";
@@ -230,7 +230,10 @@ impl NodeJs {
         self.send(&json!({
             "type": "handshake",
             "ir": self.ir.to_value(),
-            "options": { "corsOrigin": self.config.options.cors_origin },
+            "options": {
+                "corsOrigin": self.config.options.cors_origin,
+                "authToken": self.config.options.auth_token,
+            },
         }))?;
         match self.read_message(self.config.timeout_ms)? {
             Some(message) if message.get("type").and_then(Value::as_str) == Some("ready") => {

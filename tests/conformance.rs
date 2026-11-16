@@ -1,6 +1,6 @@
 //! Conformance suite: the same sample request set against all four runtimes,
 //! plus tables of error-path, list-order, content-type, method-dispatch, etag
-//! and CORS cases checked byte-for-byte.
+//! CORS and auth cases checked byte-for-byte.
 //!
 //! The runtimes must produce byte-identical canonical responses, the Node
 //! runtime must fail cleanly when its binary is missing, and the bounded
@@ -756,6 +756,61 @@ fn preflight(path: &str) -> Request {
 /// origin header. The request's `Origin` is never echoed: the pins contain no
 /// request-derived value. Without configuration `OPTIONS` stays a routed
 /// method answering 405, pinned by the method-dispatch suite.
+/// The health answer under CORS: exempt from auth, and carrying the CORS
+/// headers the stage adds on top of the plain health bytes.
+const HEALTH_CORS: &[u8] = br#"{"body":{"app":"TodoApp","ok":true,"version":"0.1.0"},"headers":{"access-control-allow-origin":"*","content-type":"application/json","etag":"\"cecc1cebf8c81e82\"","vary":"Origin"},"status":200}"#;
+
+/// The canonical bearer-token rejection: a `401` with the standard JSON error
+/// body, the normative content type and the CORS headers the stage adds.
+const UNAUTHORIZED: &[u8] = br#"{"body":{"error":"unauthorized"},"headers":{"access-control-allow-origin":"*","content-type":"application/json","vary":"Origin"},"status":401}"#;
+
+/// Authentication parity, mirroring the framework's bearer gate: a missing or
+/// mismatched token answers `401`, `GET /health` stays exempt, an exact token
+/// passes through to the routed answer, the `Bearer` scheme is
+/// case-insensitive, and a CORS preflight bypasses auth. Authorization travels
+/// in the request headers map, so no new frame field is needed.
+#[test]
+fn all_runtimes_share_the_auth_bytes() {
+    let ir = todo_ir();
+    let options = LayerOptions::default()
+        .with_auth_token("s3cr3t")
+        .with_cors_origin("*");
+    let cases = vec![
+        ParityCase {
+            name: "missing-token-is-401",
+            requests: vec![get("/todos")],
+            expected: UNAUTHORIZED,
+        },
+        ParityCase {
+            name: "wrong-token-is-401",
+            requests: vec![get("/todos").with_header("authorization", "Bearer nope")],
+            expected: UNAUTHORIZED,
+        },
+        ParityCase {
+            name: "wrong-scheme-is-401",
+            requests: vec![get("/todos").with_header("authorization", "Basic s3cr3t")],
+            expected: UNAUTHORIZED,
+        },
+        ParityCase {
+            name: "health-is-exempt",
+            requests: vec![get("/health")],
+            expected: HEALTH_CORS,
+        },
+        ParityCase {
+            name: "bearer-scheme-is-case-insensitive",
+            requests: vec![get("/todos/999").with_header("authorization", "bearer s3cr3t")],
+            expected: NOT_FOUND_CORS,
+        },
+        ParityCase {
+            name: "preflight-bypasses-auth",
+            requests: vec![preflight("/todos")],
+            expected: PREFLIGHT_204,
+        },
+    ];
+    assert_cross_runtime_parity_with(&ir, &options, &cases);
+    assert_eq!(cases.len(), 6);
+}
+
 #[test]
 fn all_runtimes_share_the_cors_bytes() {
     let ir = todo_ir();

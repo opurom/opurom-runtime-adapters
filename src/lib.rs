@@ -40,12 +40,22 @@ pub struct LayerOptions {
     /// used to build a response header. `None` disables CORS, so `OPTIONS`
     /// stays an ordinary routed method.
     pub cors_origin: Option<String>,
+    /// The development bearer token the gate requires; `None` leaves
+    /// authentication disabled, mirroring the framework's empty
+    /// `OPR_AUTH_TOKEN`. A development token only: no users, scopes or expiry.
+    pub auth_token: Option<String>,
 }
 
 impl LayerOptions {
     /// Enable CORS with one fixed origin, e.g. "*" or "https://app.example".
     pub fn with_cors_origin(mut self, origin: &str) -> Self {
         self.cors_origin = Some(origin.to_owned());
+        self
+    }
+
+    /// Require `Authorization: Bearer <token>` on every non-exempt request.
+    pub fn with_auth_token(mut self, token: &str) -> Self {
+        self.auth_token = Some(token.to_owned());
         self
     }
 }

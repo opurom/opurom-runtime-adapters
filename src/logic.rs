@@ -262,15 +262,55 @@ pub fn handle(
     max_body: usize,
     options: &LayerOptions,
 ) -> Result<Response, AdapterError> {
-    // The preflight answer bypasses routing entirely (mirroring the framework,
-    // where it also bypasses auth), and every answer then walks the response
-    // stages in the framework's fixed order: CORS before ETag.
+    // The preflight answer bypasses routing and auth entirely (mirroring the
+    // framework), authentication gates everything else before routing, and
+    // every answer then walks the response stages in the framework's fixed
+    // order: CORS before ETag.
     let mut response = match cors_preflight(req, options) {
         Some(preflight) => preflight,
+        None if !auth_exempt(req, options) && !auth_authorized(req, options) => {
+            Response::new(401, json!({ "error": "unauthorized" }))
+        }
         None => route_response(ir, store, req, max_body)?,
     };
     stage_cors(&mut response, options);
     Ok(stage_etag(response, req))
+}
+
+/// True when the request may skip the token check: authentication is
+/// disabled, or the request is `GET /health`, mirroring the framework.
+fn auth_exempt(req: &Request, options: &LayerOptions) -> bool {
+    options.auth_token.is_none() || (req.method == "GET" && req.path == "/health")
+}
+
+/// True when the request carries a matching `Authorization: Bearer` value,
+/// compared in time that depends only on the lengths (mirroring the
+/// framework's digest-then-XOR gate).
+fn auth_authorized(req: &Request, options: &LayerOptions) -> bool {
+    let Some(token) = options.auth_token.as_deref() else {
+        return true;
+    };
+    req.headers
+        .get("authorization")
+        .and_then(|raw| raw.split_once(' '))
+        .filter(|(scheme, _)| scheme.eq_ignore_ascii_case("Bearer"))
+        .is_some_and(|(_, candidate)| constant_time_eq(candidate.as_bytes(), token.as_bytes()))
+}
+
+/// Compare two byte strings in time that depends only on their lengths,
+/// mirroring the framework's `constant_time_eq`: both sides digest to a fixed
+/// width and XOR-accumulate without an early exit, and the length mismatch is
+/// folded into the verdict so unequal-length tokens stay rejected.
+fn constant_time_eq(expected: &[u8], provided: &[u8]) -> bool {
+    use sha2::{Digest, Sha256};
+    let length_mismatch = usize::from(expected.len() ^ provided.len());
+    let left = Sha256::digest(expected);
+    let right = Sha256::digest(provided);
+    let mut difference = length_mismatch;
+    for (a, b) in left.iter().zip(right.iter()) {
+        difference |= usize::from(a ^ b);
+    }
+    difference == 0
 }
 
 /// The fixed-allow-list CORS preflight answer, mirroring the framework: when

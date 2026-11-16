@@ -6,3 +6,6 @@ description = "Opurom backend runtime adapters and local conformance harness"
 
 [dependencies]
 serde_json = "1.0.154"
+# sha2: the constant-time bearer-token comparison digests both sides to a
+# fixed width, mirroring the framework's gate. No C toolchain needed.
+sha2 = "=0.10.9"
