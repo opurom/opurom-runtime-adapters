@@ -1,6 +1,6 @@
 //! Conformance suite: the same sample request set against all four runtimes,
-//! plus tables of error-path, list-order and content-type cases checked
-//! byte-for-byte.
+//! plus tables of error-path, list-order, content-type and method-dispatch
+//! cases checked byte-for-byte.
 //!
 //! The runtimes must produce byte-identical canonical responses, the Node
 //! runtime must fail cleanly when its binary is missing, and the bounded
@@ -312,6 +312,7 @@ const INVALID_FIELD_ID: &[u8] = br#"{"body":{"error":"invalid_field","field":"id
 const CONFLICT: &[u8] = br#"{"body":{"error":"conflict"},"status":409}"#;
 const UNSUPPORTED_MEDIA_TYPE: &[u8] =
     br#"{"body":{"error":"unsupported_media_type"},"status":415}"#;
+const METHOD_NOT_ALLOWED: &[u8] = br#"{"body":{"error":"method_not_allowed"},"status":405}"#;
 const EMPTY_LIST: &[u8] = br#"{"body":[],"status":200}"#;
 const PAYLOAD_TOO_LARGE: &[u8] = br#"{"body":{"error":"payload_too_large"},"status":413}"#;
 const CREATED_X: &[u8] = br#"{"body":{"done":false,"id":1,"title":"x"},"status":201}"#;
@@ -643,16 +644,18 @@ fn health_cases() -> Vec<ParityCase> {
             expected: HEALTH,
         },
         // The health route is answered even when the request body path is not a
-        // declared model route, and the verb stays GET-only.
+        // declared model route, and the verbs it serves stay GET/HEAD-only.
         ParityCase {
             name: "health-then-unknown",
             requests: vec![get("/health"), get("/__missing__")],
             expected: NOT_FOUND,
         },
+        // `/health` is a registered GET route, so a method it does not serve
+        // answers 405 instead of falling through to a 404.
         ParityCase {
             name: "health-rejects-non-get",
             requests: vec![Request::new("POST", "/health", Value::Null)],
-            expected: NOT_FOUND,
+            expected: METHOD_NOT_ALLOWED,
         },
     ]
 }
@@ -671,6 +674,84 @@ fn all_runtimes_share_the_health_route_bytes() {
     native.shutdown().expect("native shuts down");
     assert_cross_runtime_parity(&ir, &cases);
     assert_eq!(cases.len(), 3);
+}
+
+/// Method-dispatch parity, mirroring the framework router: a pattern that
+/// matches but serves no route for the request method answers 405, only an
+/// unmatched path stays 404 whatever the method, and `HEAD` is served by the
+/// `GET` route's JSON response.
+fn method_dispatch_cases() -> Vec<ParityCase> {
+    let row = json!({ "title": "x", "done": false });
+    vec![
+        ParityCase {
+            name: "patch-known-collection",
+            requests: vec![Request::new("PATCH", "/todos", Value::Null)],
+            expected: METHOD_NOT_ALLOWED,
+        },
+        ParityCase {
+            name: "put-undeclared-on-collection",
+            requests: vec![put("/todos", row.clone())],
+            expected: METHOD_NOT_ALLOWED,
+        },
+        ParityCase {
+            name: "delete-known-collection",
+            requests: vec![delete("/todos")],
+            expected: METHOD_NOT_ALLOWED,
+        },
+        ParityCase {
+            name: "create-undeclared-on-item-route",
+            requests: vec![Request::new("POST", "/todos/1", row.clone())],
+            expected: METHOD_NOT_ALLOWED,
+        },
+        ParityCase {
+            name: "options-item-route",
+            requests: vec![Request::new("OPTIONS", "/todos/1", Value::Null)],
+            expected: METHOD_NOT_ALLOWED,
+        },
+        ParityCase {
+            name: "patch-health",
+            requests: vec![Request::new("PATCH", "/health", Value::Null)],
+            expected: METHOD_NOT_ALLOWED,
+        },
+        // Only an unmatched path is 404, whatever the method.
+        ParityCase {
+            name: "patch-unknown-path",
+            requests: vec![Request::new("PATCH", "/__missing__", Value::Null)],
+            expected: NOT_FOUND,
+        },
+        ParityCase {
+            name: "head-unknown-path",
+            requests: vec![Request::new("HEAD", "/__missing__", Value::Null)],
+            expected: NOT_FOUND,
+        },
+        // HEAD is served by the GET route: the JSON-level answer matches GET
+        // and the wire layer omits the body.
+        ParityCase {
+            name: "head-collection",
+            requests: vec![Request::new("HEAD", "/todos", Value::Null)],
+            expected: EMPTY_LIST,
+        },
+        ParityCase {
+            name: "head-item-route",
+            requests: vec![post(row), Request::new("HEAD", "/todos/1", Value::Null)],
+            expected: GET_HEAD_ROW_X,
+        },
+        ParityCase {
+            name: "head-health",
+            requests: vec![Request::new("HEAD", "/health", Value::Null)],
+            expected: HEALTH,
+        },
+    ]
+}
+
+const GET_HEAD_ROW_X: &[u8] = br#"{"body":{"done":false,"id":1,"title":"x"},"status":200}"#;
+
+#[test]
+fn all_runtimes_share_the_method_dispatch_bytes() {
+    let ir = todo_ir();
+    let cases = method_dispatch_cases();
+    assert_cross_runtime_parity(&ir, &cases);
+    assert_eq!(cases.len(), 11);
 }
 
 /// A body whose compact canonical JSON is exactly `target` bytes: one `a`

@@ -90,24 +90,50 @@ function table(model) {
   return rows;
 }
 
-function findRoute(requestSegments) {
-  for (const api of ir.api) {
-    const parts = segments(api.path);
-    if (parts.length !== requestSegments.length) continue;
-    // Bind by name, not by position, so the key field's parameter wins among several.
-    const params = new Map();
-    let matched = true;
-    for (let i = 0; i < parts.length; i += 1) {
-      if (parts[i].startsWith(':')) {
-        params.set(parts[i].slice(1), requestSegments[i]);
-      } else if (parts[i] !== requestSegments[i]) {
-        matched = false;
-        break;
-      }
+// The parameters bound by one api pattern, or null when the pattern does not
+// match. Parameters bind by name, not by position, so the key field's
+// parameter wins among several.
+function matchPattern(pattern, requestSegments) {
+  const parts = segments(pattern);
+  if (parts.length !== requestSegments.length) return null;
+  const params = new Map();
+  for (let i = 0; i < parts.length; i += 1) {
+    if (parts[i].startsWith(':')) {
+      params.set(parts[i].slice(1), requestSegments[i]);
+    } else if (parts[i] !== requestSegments[i]) {
+      return null;
     }
-    if (matched) return { api, params };
   }
+  return params;
+}
+
+// The handler verb a request method resolves to, mirroring the framework
+// router: a HEAD request is served by the matching GET route (this
+// JSON-level ABI returns the handler's response; the wire layer omits the
+// body), and a method no route registers resolves to null.
+function verbFor(method, hasParams) {
+  if (method === 'GET' || method === 'HEAD') return hasParams ? 'get' : 'list';
+  if (method === 'POST') return 'create';
+  if (method === 'PUT') return 'update';
+  if (method === 'DELETE') return 'delete';
   return null;
+}
+
+// Outcome of matching a request against the IR `api` array, mirroring the
+// framework router: every matching pattern is considered, a pattern that
+// matches but declares no handler for the resolved verb answers 405, and only
+// a path no pattern matches is 404. An unmatched outcome carries only
+// `pathMatched`.
+function resolveRoute(requestSegments, method) {
+  let pathMatched = false;
+  for (const api of ir.api) {
+    const params = matchPattern(api.path, requestSegments);
+    if (params === null) continue;
+    pathMatched = true;
+    const verb = verbFor(method, params.size > 0);
+    if (verb !== null && api.handlers.includes(verb)) return { api, params, verb };
+  }
+  return { pathMatched };
 }
 
 function nextId(model, keyName) {
@@ -152,6 +178,10 @@ function notFound() {
   return { status: 404, body: { error: 'not_found' } };
 }
 
+function methodNotAllowed() {
+  return { status: 405, body: { error: 'method_not_allowed' } };
+}
+
 // The media-type rule shared by every runtime: the base type before any `;`
 // parameters, compared case-insensitively. An absent header is JSON by
 // default; anything else is refused with 415 before route matching.
@@ -183,30 +213,28 @@ function handle(request) {
     return { status: 415, body: { error: 'unsupported_media_type' } };
   }
 
-  // framework rules: `GET /health` answers with the app identity.
-  // It is fixed and model-independent, so it is answered before route matching.
-  if (method === 'GET' && path === '/health') {
-    return { status: 200, body: { ok: true, app: ir.app, version: '0.1.0' } };
+  // framework rules: `/health` is a registered GET route answering the app
+  // identity, so it is answered before model route matching and a method it
+  // does not serve is a 405 like any other known pattern.
+  if (path === '/health') {
+    if (method === 'GET' || method === 'HEAD') {
+      return { status: 200, body: { ok: true, app: ir.app, version: '0.1.0' } };
+    }
+    return methodNotAllowed();
   }
 
-  const found = findRoute(segments(path));
-  if (!found) return notFound();
+  const resolved = resolveRoute(segments(path), method);
+  if (resolved.api === undefined) {
+    return resolved.pathMatched ? methodNotAllowed() : notFound();
+  }
+  const { api, params, verb } = resolved;
 
-  let verb;
-  if (method === 'GET') verb = found.params.size === 0 ? 'list' : 'get';
-  else if (method === 'POST') verb = 'create';
-  else if (method === 'PUT') verb = 'update';
-  else if (method === 'DELETE') verb = 'delete';
-  else return notFound();
-
-  if (!found.api.handlers.includes(verb)) return notFound();
-
-  const model = modelByName(found.api.model);
+  const model = modelByName(api.model);
   if (!model) return notFound();
 
   const key = keyInfo(model);
   let itemKey = null;
-  const rawKey = found.params.get(key.name);
+  const rawKey = params.get(key.name);
   if (rawKey !== undefined) {
     itemKey = parseKey(key.kind, rawKey);
     if (itemKey === null) return notFound();

@@ -145,9 +145,23 @@ framework rules.
 
 `GET /health` answers `200 {"ok":true,"app":"<name>","version":"0.1.0"}` on all
 four runtimes, byte-identically. It is fixed and model-independent, so it is
-answered before route matching and only for `GET`; any other method on
-`/health` falls through to the normal route table and answers 404 when no model
-route matches. The `app` value is the IR's `app` field.
+answered before model route matching and only for `GET`/`HEAD`; any other
+method on `/health` answers `405 {"error":"method_not_allowed"}` because
+`/health` is a registered GET route. The `app` value is the IR's `app` field.
+
+### Method dispatch
+
+Dispatch mirrors the framework router:
+
+| Request | Answer |
+| --- | --- |
+| unknown path, any method | `404 {"error":"not_found"}` |
+| known path, no route for the method (`PATCH /todos`, `POST /todos/1`) | `405 {"error":"method_not_allowed"}` |
+| `HEAD` on a path a `GET` route serves | the `GET` route's JSON response |
+
+`405` is decided by the path pattern alone: a path no api pattern matches stays
+`404` whatever the method. `HEAD` resolves against the `GET` route, so its
+JSON-level answer is byte-identical to `GET`; the wire layer omits the body.
 
 ### Error paths and list order
 
@@ -212,8 +226,9 @@ node --check adapters/node-host.mjs
 
 - `tests/conformance.rs` — the seven sample requests against all four
   runtimes, asserting byte-identical canonical responses; the error-path and
-  list-order table; the content-type table; the body-cap table; the health-route
-  table; the exact expected bytes for the documented CRUD answers;
+  list-order table; the content-type table; the method-dispatch table; the
+  body-cap table; the health-route table; the exact expected bytes for the
+  documented CRUD answers;
   two-parameter routes dispatching from the named key on all four runtimes;
   a missing `node` binary yielding a clean `AdapterError`; a deliberately
   non-responsive host timing out in under 2 seconds; the embedded runtime

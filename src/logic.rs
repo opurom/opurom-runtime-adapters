@@ -7,7 +7,9 @@
 //!
 //! Responses follow framework rules: list -> array, create -> row,
 //! get/update -> row or 404, delete -> `{"deleted":true}` or 404, unknown path
-//! -> 404 JSON. Body size is capped by the runtime's `Capabilities::max_body`.
+//! -> 404 JSON, known path with no route for the method -> 405 JSON, `HEAD`
+//! served by the `GET` route. Body size is capped by the runtime's
+//! `Capabilities::max_body`.
 
 use crate::ir::{matches_kind, FieldKind, FullstackIr, IrApi, IrModel};
 use crate::store::Store;
@@ -48,31 +50,72 @@ fn segments(path: &str) -> Vec<&str> {
     path.split('/').filter(|s| !s.is_empty()).collect()
 }
 
-// Bind by name, not by position, so the key field's parameter wins among several.
-fn find_route<'a>(
-    ir: &'a FullstackIr,
-    request_segments: &[&str],
-) -> Option<(&'a IrApi, BTreeMap<String, String>)> {
-    for api in &ir.api {
-        let parts = segments(&api.path);
-        if parts.len() != request_segments.len() {
-            continue;
-        }
-        let mut params = BTreeMap::new();
-        let mut matched = true;
-        for (part, segment) in parts.iter().zip(request_segments.iter()) {
-            if let Some(name) = part.strip_prefix(':') {
-                params.insert(name.to_owned(), (*segment).to_owned());
-            } else if *part != *segment {
-                matched = false;
-                break;
-            }
-        }
-        if matched {
-            return Some((api, params));
+/// The parameters bound by one api pattern, or `None` when the pattern does
+/// not match. Parameters bind by name, not by position, so the key field's
+/// parameter wins among several.
+fn match_pattern(path: &str, request_segments: &[&str]) -> Option<BTreeMap<String, String>> {
+    let parts = segments(path);
+    if parts.len() != request_segments.len() {
+        return None;
+    }
+    let mut params = BTreeMap::new();
+    for (part, segment) in parts.iter().zip(request_segments.iter()) {
+        if let Some(name) = part.strip_prefix(':') {
+            params.insert(name.to_owned(), (*segment).to_owned());
+        } else if *part != *segment {
+            return None;
         }
     }
-    None
+    Some(params)
+}
+
+/// The handler verb a request method resolves to, mirroring the framework
+/// router: a `HEAD` request is served by the matching `GET` route (this
+/// JSON-level ABI returns the handler's response; the wire layer omits the
+/// body), and a method no route registers resolves to `None`.
+fn verb_for(method: &str, has_params: bool) -> Option<&'static str> {
+    match method {
+        "GET" | "HEAD" => Some(if has_params { "get" } else { "list" }),
+        "POST" => Some("create"),
+        "PUT" => Some("update"),
+        "DELETE" => Some("delete"),
+        _ => None,
+    }
+}
+
+/// Outcome of matching a request against the IR `api` array, mirroring the
+/// framework router: every matching pattern is considered, a pattern that
+/// matches but declares no handler for the resolved verb answers 405, and only
+/// a path no pattern matches is 404.
+enum Route<'a> {
+    Matched {
+        api: &'a IrApi,
+        params: BTreeMap<String, String>,
+        verb: &'static str,
+    },
+    MethodNotAllowed,
+    NotFound,
+}
+
+fn resolve_route<'a>(ir: &'a FullstackIr, request_segments: &[&str], method: &str) -> Route<'a> {
+    let mut path_matched = false;
+    for api in &ir.api {
+        let Some(params) = match_pattern(&api.path, request_segments) else {
+            continue;
+        };
+        path_matched = true;
+        let Some(verb) = verb_for(method, !params.is_empty()) else {
+            continue;
+        };
+        if api.handlers.iter().any(|handler| handler == verb) {
+            return Route::Matched { api, params, verb };
+        }
+    }
+    if path_matched {
+        Route::MethodNotAllowed
+    } else {
+        Route::NotFound
+    }
 }
 
 /// Canonical key rule: an int key is the decimal spelling of its i64 value, so
@@ -110,6 +153,10 @@ fn next_id(store: &dyn Store, model: &str, key_name: &str) -> i64 {
 
 fn not_found() -> Response {
     Response::new(404, json!({ "error": "not_found" }))
+}
+
+fn method_not_allowed() -> Response {
+    Response::new(405, json!({ "error": "method_not_allowed" }))
 }
 
 fn invalid_body(field: Option<&str>) -> Response {
@@ -193,30 +240,25 @@ pub fn handle(
         }
     }
 
-    // framework rules: `GET /health` answers with the app identity.
-    // It is fixed and model-independent, so it is answered before route matching.
-    if req.method == "GET" && req.path == "/health" {
-        return Ok(Response::new(
-            200,
-            json!({ "ok": true, "app": ir.app, "version": "0.1.0" }),
-        ));
+    // framework rules: `/health` is a registered GET route answering with the
+    // app identity, so it is answered before model route matching and a method
+    // it does not serve is a 405 like any other known pattern.
+    if req.path == "/health" {
+        if matches!(req.method.as_str(), "GET" | "HEAD") {
+            return Ok(Response::new(
+                200,
+                json!({ "ok": true, "app": ir.app, "version": "0.1.0" }),
+            ));
+        }
+        return Ok(method_not_allowed());
     }
 
     let request_segments = segments(&req.path);
-    let Some((api, params)) = find_route(ir, &request_segments) else {
-        return Ok(not_found());
+    let (api, params, verb) = match resolve_route(ir, &request_segments, &req.method) {
+        Route::Matched { api, params, verb } => (api, params, verb),
+        Route::MethodNotAllowed => return Ok(method_not_allowed()),
+        Route::NotFound => return Ok(not_found()),
     };
-    let verb = match (req.method.as_str(), params.is_empty()) {
-        ("GET", true) => "list",
-        ("GET", false) => "get",
-        ("POST", _) => "create",
-        ("PUT", _) => "update",
-        ("DELETE", _) => "delete",
-        _ => return Ok(not_found()),
-    };
-    if !api.handlers.iter().any(|handler| handler == verb) {
-        return Ok(not_found());
-    }
     let Some(model) = ir.model(&api.model) else {
         return Ok(not_found());
     };
