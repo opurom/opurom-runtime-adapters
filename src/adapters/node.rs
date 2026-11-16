@@ -5,8 +5,8 @@
 //!
 //! ```text
 //! -> {"type":"handshake","ir":{...}}
-//! <- {"type":"ready","ok":true,"protocol":"opurom-runtime-adapters/2"}
-//! -> {"type":"invoke","request":{"method":"GET","path":"/todos","body":null,"contentType":null}}
+//! <- {"type":"ready","ok":true,"protocol":"opurom-runtime-adapters/3"}
+//! -> {"type":"invoke","request":{"method":"GET","path":"/todos","body":null,"contentType":null,"headers":{}}}
 //! <- {"type":"response","status":200,"body":"[{\"id\":1}]","headers":{"content-type":"application/json"}}
 //! -> {"type":"shutdown"}
 //! <- {"type":"bye"}
@@ -30,11 +30,11 @@ use std::time::Duration;
 pub const DEFAULT_TIMEOUT_MS: u64 = 1000;
 
 /// Protocol id the host must echo in its ready frame. Bumped with the frame
-/// schema: response frames carry required `headers` since /2. The id is
-/// asserted at the handshake because the host script is read from disk at
-/// runtime, so a stale script must fail fast instead of silently dropping
-/// frame fields.
-pub const HOST_PROTOCOL: &str = "opurom-runtime-adapters/2";
+/// schema: response frames carry required `headers` since /2, request frames
+/// carry required `headers` since /3. The id is asserted at the handshake
+/// because the host script is read from disk at runtime, so a stale script
+/// must fail fast instead of silently dropping frame fields.
+pub const HOST_PROTOCOL: &str = "opurom-runtime-adapters/3";
 
 /// Grace period given to the host to answer the shutdown message.
 const SHUTDOWN_GRACE_MS: u64 = 200;

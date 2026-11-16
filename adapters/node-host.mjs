@@ -5,8 +5,8 @@
 // line-delimited JSON over stdin/stdout:
 //
 //   -> {"type":"handshake","ir":{...}}
-//   <- {"type":"ready","ok":true,"protocol":"opurom-runtime-adapters/2"}
-//   -> {"type":"invoke","request":{"method":"GET","path":"/todos","body":null,"contentType":null}}
+//   <- {"type":"ready","ok":true,"protocol":"opurom-runtime-adapters/3"}
+//   -> {"type":"invoke","request":{"method":"GET","path":"/todos","body":null,"contentType":null,"headers":{}}}
 //   <- {"type":"response","status":200,"body":"[...]","headers":{"content-type":"application/json"}}
 //   -> {"type":"shutdown"}
 //   <- {"type":"bye"}
@@ -17,10 +17,61 @@
 import readline from 'node:readline';
 
 const MAX_BODY_BYTES = 1024 * 1024;
-// Frame schema v2: response frames carry a required `headers` map. The
-// protocol id is asserted by the Rust side at the handshake, so a stale copy
-// of this script fails fast instead of silently dropping frame fields.
-const PROTOCOL = 'opurom-runtime-adapters/2';
+// Frame schema v3: response frames carry a required `headers` map since /2 and
+// request frames since /3. The protocol id is asserted by the Rust side at the
+// handshake, so a stale copy of this script fails fast instead of silently
+// dropping frame fields.
+const PROTOCOL = 'opurom-runtime-adapters/3';
+
+// Responses larger than this many bytes would be gzip-compressed by the host
+// transport, which a `304` must record with `Vary: Accept-Encoding`.
+const GZIP_THRESHOLD_BYTES = 1024;
+
+// Deterministic, non-cryptographic FNV-1a validator over the UTF-8 bytes of
+// the canonical JSON body, mirroring `etag_for` on the Rust side. BigInt keeps
+// the 64-bit arithmetic exact; no third-party dependency is needed.
+function etagFor(body) {
+  let hash = 0xcbf29ce484222325n;
+  for (const byte of Buffer.from(body, 'utf8')) {
+    hash ^= BigInt(byte);
+    hash = (hash * 0x100000001b3n) & 0xffffffffffffffffn;
+  }
+  return '"' + hash.toString(16).padStart(16, '0') + '"';
+}
+
+// Weak/list comparison for `If-None-Match`, mirroring the framework: `*`
+// matches everything, weak prefixes are stripped before comparing, and a
+// malformed validator simply never matches (staying a `200`).
+function ifNoneMatchMatches(raw, etag) {
+  return raw.split(',').some((entry) => {
+    const candidate = entry.trim();
+    const strong = candidate.startsWith('W/')
+      ? candidate.slice(2)
+      : candidate.startsWith('w/')
+        ? candidate.slice(2)
+        : candidate;
+    return candidate === '*' || strong.trim() === etag;
+  });
+}
+
+// True when the request offers gzip with a nonzero quality, mirroring the
+// framework's `acceptsGzip` over the lowercase header map.
+function acceptsGzip(headers) {
+  const raw = headers['accept-encoding'];
+  if (typeof raw !== 'string') return false;
+  return raw.split(',').some((entry) => {
+    const fields = entry.trim().split(';');
+    const coding = (fields[0] || '').trim();
+    if (coding.toLowerCase() !== 'gzip') return false;
+    return !fields.slice(1).some((parameter) => {
+      const index = parameter.indexOf('=');
+      if (index < 0) return false;
+      const name = parameter.slice(0, index).trim();
+      if (name.toLowerCase() !== 'q') return false;
+      return Number.parseFloat(parameter.slice(index + 1).trim()) === 0;
+    });
+  });
+}
 
 let ir = { app: '', models: [], api: [] };
 /** model name -> Map(key -> row) */
@@ -228,10 +279,51 @@ function invalidBody(field) {
 
 // The response builder: every JSON response carries the normative
 // `content-type`, mirroring `Response::new` on the Rust side; headers a verb
-// already attached (the `Allow` list on a 405) are kept.
+// already attached (the `Allow` list on a 405) are kept. The ETag stage runs
+// after the stamp, mirroring the framework's stage order.
 function handle(request) {
   const response = serve(request);
   response.headers = { ...response.headers, 'content-type': 'application/json' };
+  return stageEtag(response, requestHeaders(request), String(request.method || ''));
+}
+
+// The request headers other than the Content-Type, keyed by lowercase name.
+// An absent or malformed map is simply empty, never a failure.
+function requestHeaders(request) {
+  const raw = request.headers;
+  if (raw === null || raw === undefined || typeof raw !== 'object' || Array.isArray(raw)) {
+    return {};
+  }
+  const headers = {};
+  for (const [name, value] of Object.entries(raw)) {
+    if (typeof value === 'string') headers[name.toLowerCase()] = value;
+  }
+  return headers;
+}
+
+// The ETag stage, mirroring the framework: every successful non-null answer
+// carries the body-hash validator, and a matching `If-None-Match` on GET
+// becomes a bodyless `304` that keeps only validator and caching headers.
+// Compression itself stays at the host transport layer, so answers are the
+// pre-compression representation and never carry `Content-Encoding`.
+function stageEtag(response, headers, method) {
+  if (response.status < 200 || response.status >= 300 || response.body === null) {
+    return response;
+  }
+  const body = canonicalJson(response.body);
+  const etag = etagFor(body);
+  const compresses =
+    acceptsGzip(headers) && Buffer.byteLength(body, 'utf8') > GZIP_THRESHOLD_BYTES;
+  if (
+    method === 'GET' &&
+    typeof headers['if-none-match'] === 'string' &&
+    ifNoneMatchMatches(headers['if-none-match'], etag)
+  ) {
+    const kept = { etag };
+    if (compresses) kept.vary = 'Accept-Encoding';
+    return { status: 304, body: '', headers: kept };
+  }
+  response.headers = { ...response.headers, etag };
   return response;
 }
 

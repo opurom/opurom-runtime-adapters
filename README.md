@@ -168,6 +168,25 @@ path no api pattern matches stays `404` whatever the method, without `allow`.
 `HEAD` resolves against the `GET` route, so its JSON-level answer is
 byte-identical to `GET`; the wire layer omits the body.
 
+### ETag and conditional requests
+
+Every successful (2xx) answer with a JSON body carries an `etag` header: a
+deterministic, non-cryptographic FNV-1a validator over the canonical JSON body
+bytes, spelled as a quoted 16-digit lowercase hex value. It mirrors the
+framework's `etag_for` and is always emitted, while the framework keeps the
+feature opt-in behind `OPR_ETAG`.
+
+A `GET` whose `If-None-Match` matches the validator becomes a bodyless `304`
+that keeps only validator and caching headers and drops representation headers
+such as `content-type`. The comparison is the framework's weak/list form: `*`
+matches everything, `W/` prefixes are stripped before comparing, and a
+malformed validator simply never matches, so the answer stays a `200`. Only
+`GET` is conditional; other methods answer normally whatever they carry. A
+`304` gains `Vary: Accept-Encoding` only when the body would actually be
+gzip-compressed by the host transport; the adapters themselves answer the
+pre-compression representation and never emit `Content-Encoding` — compression
+is a host transport feature, outside this ABI.
+
 ### Error paths and list order
 
 A table-driven case set in `tests/conformance.rs` runs each case against all

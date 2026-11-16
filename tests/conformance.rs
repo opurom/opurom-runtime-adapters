@@ -1,6 +1,6 @@
 //! Conformance suite: the same sample request set against all four runtimes,
-//! plus tables of error-path, list-order, content-type and method-dispatch
-//! cases checked byte-for-byte.
+//! plus tables of error-path, list-order, content-type, method-dispatch and
+//! etag cases checked byte-for-byte.
 //!
 //! The runtimes must produce byte-identical canonical responses, the Node
 //! runtime must fail cleanly when its binary is missing, and the bounded
@@ -116,7 +116,7 @@ fn the_conformance_bytes_are_the_documented_crud_answers() {
         .canonical_bytes();
     assert_eq!(
         empty,
-        br#"{"body":[],"headers":{"content-type":"application/json"},"status":200}"#.to_vec()
+        br#"{"body":[],"headers":{"content-type":"application/json","etag":"\"09612b07b5ecb5a5\""},"status":200}"#.to_vec()
     );
 
     let created = native
@@ -125,7 +125,7 @@ fn the_conformance_bytes_are_the_documented_crud_answers() {
         .canonical_bytes();
     assert_eq!(
         created,
-        br#"{"body":{"done":false,"id":1,"title":"sample"},"headers":{"content-type":"application/json"},"status":201}"#.to_vec()
+        br#"{"body":{"done":false,"id":1,"title":"sample"},"headers":{"content-type":"application/json","etag":"\"9a3c38d2aa76e30a\""},"status":201}"#.to_vec()
     );
 
     let one = native
@@ -134,7 +134,7 @@ fn the_conformance_bytes_are_the_documented_crud_answers() {
         .canonical_bytes();
     assert_eq!(
         one,
-        br#"{"body":[{"done":false,"id":1,"title":"sample"}],"headers":{"content-type":"application/json"},"status":200}"#.to_vec()
+        br#"{"body":[{"done":false,"id":1,"title":"sample"}],"headers":{"content-type":"application/json","etag":"\"59b6c31fc3b310b8\""},"status":200}"#.to_vec()
     );
 
     let deleted = native
@@ -143,7 +143,7 @@ fn the_conformance_bytes_are_the_documented_crud_answers() {
         .canonical_bytes();
     assert_eq!(
         deleted,
-        br#"{"body":{"deleted":true},"headers":{"content-type":"application/json"},"status":200}"#
+        br#"{"body":{"deleted":true},"headers":{"content-type":"application/json","etag":"\"1b78d82c2cd045c0\""},"status":200}"#
             .to_vec()
     );
 
@@ -326,12 +326,12 @@ const METHOD_NOT_ALLOWED_COLLECTION: &[u8] = br#"{"body":{"error":"method_not_al
 const METHOD_NOT_ALLOWED_ITEM: &[u8] = br#"{"body":{"error":"method_not_allowed"},"headers":{"allow":"GET, HEAD, PUT, DELETE","content-type":"application/json"},"status":405}"#;
 const METHOD_NOT_ALLOWED_HEALTH: &[u8] = br#"{"body":{"error":"method_not_allowed"},"headers":{"allow":"GET, HEAD","content-type":"application/json"},"status":405}"#;
 const EMPTY_LIST: &[u8] =
-    br#"{"body":[],"headers":{"content-type":"application/json"},"status":200}"#;
+    br#"{"body":[],"headers":{"content-type":"application/json","etag":"\"09612b07b5ecb5a5\""},"status":200}"#;
 const PAYLOAD_TOO_LARGE: &[u8] = br#"{"body":{"error":"payload_too_large"},"headers":{"content-type":"application/json"},"status":413}"#;
-const CREATED_X: &[u8] = br#"{"body":{"done":false,"id":1,"title":"x"},"headers":{"content-type":"application/json"},"status":201}"#;
-const CREATED_Y: &[u8] = br#"{"body":{"done":false,"id":2,"title":"y"},"headers":{"content-type":"application/json"},"status":201}"#;
-const ORDERED_LIST: &[u8] = br#"{"body":[{"done":false,"id":1,"title":"a"},{"done":false,"id":3,"title":"c"},{"done":false,"id":4,"title":"d"}],"headers":{"content-type":"application/json"},"status":200}"#;
-const INSERTION_ORDER_LIST: &[u8] = br#"{"body":[{"done":false,"id":9,"title":"b"},{"done":false,"id":3,"title":"a"}],"headers":{"content-type":"application/json"},"status":200}"#;
+const CREATED_X: &[u8] = br#"{"body":{"done":false,"id":1,"title":"x"},"headers":{"content-type":"application/json","etag":"\"d4c1a9335a7ec9fa\""},"status":201}"#;
+const CREATED_Y: &[u8] = br#"{"body":{"done":false,"id":2,"title":"y"},"headers":{"content-type":"application/json","etag":"\"50085d227e657cde\""},"status":201}"#;
+const ORDERED_LIST: &[u8] = br#"{"body":[{"done":false,"id":1,"title":"a"},{"done":false,"id":3,"title":"c"},{"done":false,"id":4,"title":"d"}],"headers":{"content-type":"application/json","etag":"\"661da2e984ef27f1\""},"status":200}"#;
+const INSERTION_ORDER_LIST: &[u8] = br#"{"body":[{"done":false,"id":9,"title":"b"},{"done":false,"id":3,"title":"a"}],"headers":{"content-type":"application/json","etag":"\"5ee8af21549e8680\""},"status":200}"#;
 
 fn get(path: &str) -> Request {
     Request::new("GET", path, Value::Null)
@@ -644,10 +644,86 @@ fn all_runtimes_share_the_content_type_bytes() {
     assert_eq!(cases.len(), 7);
 }
 
+/// ETag parity, mirroring the framework: every successful answer carries the
+/// body-hash validator, a matching `If-None-Match` on GET becomes a bodyless
+/// `304` keeping only the validator, weak and malformed validators never
+/// downgrade the answer, and non-GET methods are never conditional. A `304`
+/// gains `Vary: Accept-Encoding` only when the host transport would actually
+/// compress the body, which the sample set stays under.
+const ROW_X_ETAG: &str = "\"d4c1a9335a7ec9fa\"";
+const CONDITIONAL_304: &[u8] =
+    br#"{"body":"","headers":{"etag":"\"d4c1a9335a7ec9fa\""},"status":304}"#;
+/// The updated row answers `200`, and a `PUT` carrying a stale validator is
+/// still the plain successful update, never a `304`.
+const UPDATED_ROW_Y: &[u8] =
+    br#"{"body":{"done":false,"id":1,"title":"y"},"headers":{"content-type":"application/json","etag":"\"ccff8033565b84c1\""},"status":200}"#;
+
+fn etag_cases() -> Vec<ParityCase> {
+    let row = json!({ "title": "x", "done": false });
+    vec![
+        ParityCase {
+            name: "etag-present-and-deterministic",
+            requests: vec![post(row.clone()), get("/todos/1")],
+            expected: GET_HEAD_ROW_X,
+        },
+        ParityCase {
+            name: "matching-if-none-match-answers-304",
+            requests: vec![
+                post(row.clone()),
+                get("/todos/1").with_header("if-none-match", ROW_X_ETAG),
+            ],
+            expected: CONDITIONAL_304,
+        },
+        ParityCase {
+            name: "weak-validator-still-matches",
+            requests: vec![
+                post(row.clone()),
+                get("/todos/1").with_header("if-none-match", &format!("W/{ROW_X_ETAG}")),
+            ],
+            expected: CONDITIONAL_304,
+        },
+        ParityCase {
+            name: "malformed-validator-stays-200",
+            requests: vec![
+                post(row.clone()),
+                get("/todos/1").with_header("if-none-match", "\"0000000000000000\""),
+            ],
+            expected: GET_HEAD_ROW_X,
+        },
+        ParityCase {
+            name: "304-gains-no-vary-under-the-compression-threshold",
+            requests: vec![
+                post(row.clone()),
+                get("/todos/1")
+                    .with_header("if-none-match", ROW_X_ETAG)
+                    .with_header("accept-encoding", "gzip"),
+            ],
+            expected: CONDITIONAL_304,
+        },
+        ParityCase {
+            name: "non-get-requests-are-never-conditional",
+            requests: vec![
+                post(row.clone()),
+                put("/todos/1", json!({ "title": "y", "done": false }))
+                    .with_header("if-none-match", ROW_X_ETAG),
+            ],
+            expected: UPDATED_ROW_Y,
+        },
+    ]
+}
+
+#[test]
+fn all_runtimes_share_the_etag_bytes() {
+    let ir = todo_ir();
+    let cases = etag_cases();
+    assert_cross_runtime_parity(&ir, &cases);
+    assert_eq!(cases.len(), 6);
+}
+
 /// framework rules pins `GET /health` to the app identity. Every
 /// runtime answers it and the bytes are identical, before route matching, so a
 /// missing `/health` route on any one runtime is a conformance failure.
-const HEALTH: &[u8] = br#"{"body":{"app":"TodoApp","ok":true,"version":"0.1.0"},"headers":{"content-type":"application/json"},"status":200}"#;
+const HEALTH: &[u8] = br#"{"body":{"app":"TodoApp","ok":true,"version":"0.1.0"},"headers":{"content-type":"application/json","etag":"\"cecc1cebf8c81e82\""},"status":200}"#;
 
 fn health_cases() -> Vec<ParityCase> {
     vec![
@@ -757,7 +833,7 @@ fn method_dispatch_cases() -> Vec<ParityCase> {
     ]
 }
 
-const GET_HEAD_ROW_X: &[u8] = br#"{"body":{"done":false,"id":1,"title":"x"},"headers":{"content-type":"application/json"},"status":200}"#;
+const GET_HEAD_ROW_X: &[u8] = br#"{"body":{"done":false,"id":1,"title":"x"},"headers":{"content-type":"application/json","etag":"\"d4c1a9335a7ec9fa\""},"status":200}"#;
 
 #[test]
 fn all_runtimes_share_the_method_dispatch_bytes() {
@@ -915,10 +991,10 @@ fn nested_ir() -> FullstackIr {
     FullstackIr::from_value(&value).expect("the nested IR parses")
 }
 
-const NESTED_ROW_X: &[u8] = br#"{"body":{"done":false,"id":1,"title":"x"},"headers":{"content-type":"application/json"},"status":200}"#;
-const NESTED_ROW_Y: &[u8] = br#"{"body":{"done":false,"id":1,"title":"y"},"headers":{"content-type":"application/json"},"status":200}"#;
+const NESTED_ROW_X: &[u8] = br#"{"body":{"done":false,"id":1,"title":"x"},"headers":{"content-type":"application/json","etag":"\"d4c1a9335a7ec9fa\""},"status":200}"#;
+const NESTED_ROW_Y: &[u8] = br#"{"body":{"done":false,"id":1,"title":"y"},"headers":{"content-type":"application/json","etag":"\"ccff8033565b84c1\""},"status":200}"#;
 const NESTED_DELETED: &[u8] =
-    br#"{"body":{"deleted":true},"headers":{"content-type":"application/json"},"status":200}"#;
+    br#"{"body":{"deleted":true},"headers":{"content-type":"application/json","etag":"\"1b78d82c2cd045c0\""},"status":200}"#;
 
 fn nested_trace() -> Vec<Request> {
     vec![

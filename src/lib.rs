@@ -38,6 +38,9 @@ pub struct Request {
     pub path: String,
     pub body: Value,
     pub content_type: Option<String>,
+    /// Request headers other than the Content-Type, keyed by lowercase name.
+    /// `BTreeMap` keeps them sorted for the wire frame.
+    pub headers: std::collections::BTreeMap<String, String>,
 }
 
 impl Request {
@@ -47,6 +50,7 @@ impl Request {
             path: path.to_owned(),
             body,
             content_type: None,
+            headers: std::collections::BTreeMap::new(),
         }
     }
 
@@ -56,12 +60,19 @@ impl Request {
         self
     }
 
+    /// Set one request header, replacing any previous value for the name.
+    pub fn with_header(mut self, name: &str, value: &str) -> Self {
+        self.headers.insert(name.to_lowercase(), value.to_owned());
+        self
+    }
+
     pub fn to_value(&self) -> Value {
         json!({
             "method": self.method,
             "path": self.path,
             "body": self.body,
             "contentType": self.content_type,
+            "headers": self.headers,
         })
     }
 }
@@ -94,6 +105,12 @@ impl Response {
     pub fn with_header(mut self, name: &str, value: &str) -> Self {
         self.headers.insert(name.to_owned(), value.to_owned());
         self
+    }
+
+    /// The canonical JSON bytes of the body alone: the byte form the ETag
+    /// validator hashes and the compression threshold measures.
+    fn canonical_body_bytes(&self) -> Vec<u8> {
+        serde_json::to_vec(&self.body).expect("serde_json::Value is always serializable")
     }
 
     /// Canonical wire form used for byte comparisons.

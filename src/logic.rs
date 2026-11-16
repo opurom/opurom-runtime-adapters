@@ -261,6 +261,17 @@ pub fn handle(
     req: &Request,
     max_body: usize,
 ) -> Result<Response, AdapterError> {
+    let routed = route_response(ir, store, req, max_body)?;
+    Ok(stage_etag(routed, req))
+}
+
+/// The routing and CRUD pipeline: validation, health, dispatch.
+fn route_response(
+    ir: &FullstackIr,
+    store: &mut dyn Store,
+    req: &Request,
+    max_body: usize,
+) -> Result<Response, AdapterError> {
     // Serializing a well-formed serde_json::Value cannot fail.
     let body_len = serde_json::to_vec(&req.body)
         .expect("serde_json::Value is always serializable")
@@ -497,4 +508,89 @@ pub fn sample_checks(ir: &FullstackIr) -> Vec<Check> {
             request: get(&item),
         },
     ]
+}
+
+/// Response bodies larger than this many bytes would be gzip-compressed by the
+/// host transport, which a `304` must record with `Vary: Accept-Encoding`.
+const GZIP_THRESHOLD_BYTES: usize = 1024;
+
+/// Deterministic, non-cryptographic FNV-1a validator for the canonical JSON
+/// body bytes, mirroring the framework's `etag_for`: a quoted 64-bit lowercase
+/// hex spelling.
+fn etag_for(body: &[u8]) -> String {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in body {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    format!("\"{hash:016x}\"")
+}
+
+/// Weak/list comparison for `If-None-Match`, mirroring the framework: a
+/// `*` matches everything, weak prefixes are stripped before comparing, and a
+/// malformed validator simply never matches (staying a `200`).
+fn if_none_match_matches(raw: &str, etag: &str) -> bool {
+    raw.split(',').any(|entry| {
+        let candidate = entry.trim();
+        let strong = candidate
+            .strip_prefix("W/")
+            .or_else(|| candidate.strip_prefix("w/"))
+            .unwrap_or(candidate)
+            .trim();
+        candidate == "*" || strong == etag
+    })
+}
+
+/// True when the request offers gzip with a nonzero quality, mirroring the
+/// framework's `accepts_gzip` over the lowercase header map.
+fn accepts_gzip(headers: &std::collections::BTreeMap<String, String>) -> bool {
+    headers.get("accept-encoding").is_some_and(|raw| {
+        raw.split(',').any(|entry| {
+            let mut fields = entry.trim().split(';');
+            let coding = fields.next().unwrap_or_default().trim();
+            if !coding.eq_ignore_ascii_case("gzip") {
+                return false;
+            }
+            !fields.any(|parameter| {
+                let Some((name, value)) = parameter.trim().split_once('=') else {
+                    return false;
+                };
+                name.trim().eq_ignore_ascii_case("q") && value.trim().parse::<f32>() == Ok(0.0)
+            })
+        })
+    })
+}
+
+/// The ETag stage, mirroring the framework: every successful non-empty answer
+/// carries the body-hash validator, and a matching `If-None-Match` on GET
+/// becomes a bodyless `304` that keeps only validator and caching headers.
+/// Compression itself stays at the host transport layer, so answers are the
+/// pre-compression representation and never carry `Content-Encoding`.
+fn stage_etag(mut response: Response, req: &Request) -> Response {
+    if !(200..300).contains(&response.status) || response.body.is_null() {
+        return response;
+    }
+    let body = response.canonical_body_bytes();
+    response.headers.insert("etag".to_owned(), etag_for(&body));
+    let compresses = accepts_gzip(&req.headers) && body.len() > GZIP_THRESHOLD_BYTES;
+    if req.method == "GET" {
+        if let Some(raw) = req.headers.get("if-none-match") {
+            if if_none_match_matches(raw, &response.headers["etag"]) {
+                response.status = 304;
+                response.body = Value::String(String::new());
+                response.headers.retain(|name, _| {
+                    name == "etag"
+                        || name == "vary"
+                        || name == "cache-control"
+                        || name.starts_with("access-control-")
+                });
+                if compresses {
+                    response
+                        .headers
+                        .insert("vary".to_owned(), "Accept-Encoding".to_owned());
+                }
+            }
+        }
+    }
+    response
 }
