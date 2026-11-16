@@ -13,12 +13,13 @@
 use crate::ir::FullstackIr;
 use crate::logic;
 use crate::store::{FixedStore, Store};
-use crate::{AdapterError, Capabilities, Request, Response, RuntimeAdapter};
+use crate::{AdapterError, Capabilities, LayerOptions, Request, Response, RuntimeAdapter};
 
 pub struct Embedded {
     ir: FullstackIr,
     store: FixedStore,
     capabilities: Capabilities,
+    options: LayerOptions,
 }
 
 impl Embedded {
@@ -33,7 +34,14 @@ impl Embedded {
                 network: false,
                 max_body: crate::MAX_BODY_BYTES,
             },
+            options: LayerOptions::default(),
         }
+    }
+
+    /// Set the operator layer options, e.g. enabling CORS with one origin.
+    pub fn with_options(mut self, options: LayerOptions) -> Self {
+        self.options = options;
+        self
     }
 
     /// Constant resident size of the persistent state.
@@ -56,7 +64,13 @@ impl RuntimeAdapter for Embedded {
     }
 
     fn invoke(&mut self, req: &Request) -> Result<Response, AdapterError> {
-        logic::handle(&self.ir, &mut self.store, req, self.capabilities.max_body)
+        logic::handle(
+            &self.ir,
+            &mut self.store,
+            req,
+            self.capabilities.max_body,
+            &self.options,
+        )
     }
 
     fn shutdown(&mut self) -> Result<(), AdapterError> {

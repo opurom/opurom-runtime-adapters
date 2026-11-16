@@ -187,6 +187,30 @@ gzip-compressed by the host transport; the adapters themselves answer the
 pre-compression representation and never emit `Content-Encoding` — compression
 is a host transport feature, outside this ABI.
 
+### CORS
+
+CORS is operator configuration, not part of the IR: each adapter takes a
+`LayerOptions` value (defaulting to off, mirroring the framework's
+environment-driven defaults) and the node host receives it in the handshake
+frame's `options` section.
+
+With an origin configured, the behavior mirrors the framework's CORS layer:
+
+- every `OPTIONS` request, on any path, is a fixed-allow-list preflight:
+  a bodyless `204` with `access-control-allow-origin`,
+  `access-control-allow-methods: GET, POST, PUT, DELETE, OPTIONS`,
+  `access-control-allow-headers: Authorization, Content-Type` and
+  `Vary: Origin`;
+- every routed answer carries `access-control-allow-origin` and
+  `Vary: Origin`, including error answers, and a `304` keeps the
+  `Access-Control-*` header because the CORS stage runs before the ETag stage;
+- the request's `Origin` header is never used to build a response header —
+  the origin is emitted verbatim from the configuration.
+
+Without configuration `OPTIONS` stays an ordinary routed method answering
+`405`, pinned by the method-dispatch suite, and no response carries CORS
+headers.
+
 ### Error paths and list order
 
 A table-driven case set in `tests/conformance.rs` runs each case against all

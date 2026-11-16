@@ -4,8 +4,8 @@
 // IR `models`/`api` arrays handed over during the handshake, and speaks
 // line-delimited JSON over stdin/stdout:
 //
-//   -> {"type":"handshake","ir":{...}}
-//   <- {"type":"ready","ok":true,"protocol":"opurom-runtime-adapters/3"}
+//   -> {"type":"handshake","ir":{...},"options":{"corsOrigin":null}}
+//   <- {"type":"ready","ok":true,"protocol":"opurom-runtime-adapters/4"}
 //   -> {"type":"invoke","request":{"method":"GET","path":"/todos","body":null,"contentType":null,"headers":{}}}
 //   <- {"type":"response","status":200,"body":"[...]","headers":{"content-type":"application/json"}}
 //   -> {"type":"shutdown"}
@@ -21,7 +21,7 @@ const MAX_BODY_BYTES = 1024 * 1024;
 // request frames since /3. The protocol id is asserted by the Rust side at the
 // handshake, so a stale copy of this script fails fast instead of silently
 // dropping frame fields.
-const PROTOCOL = 'opurom-runtime-adapters/3';
+const PROTOCOL = 'opurom-runtime-adapters/4';
 
 // Responses larger than this many bytes would be gzip-compressed by the host
 // transport, which a `304` must record with `Vary: Accept-Encoding`.
@@ -74,6 +74,9 @@ function acceptsGzip(headers) {
 }
 
 let ir = { app: '', models: [], api: [] };
+// Operator layer options handed over in the handshake frame; every field
+// defaults to off, mirroring the framework's environment defaults.
+let layerOptions = { corsOrigin: null };
 /** model name -> Map(key -> row) */
 const tables = new Map();
 
@@ -282,9 +285,51 @@ function invalidBody(field) {
 // already attached (the `Allow` list on a 405) are kept. The ETag stage runs
 // after the stamp, mirroring the framework's stage order.
 function handle(request) {
+  // The preflight answer bypasses routing entirely (mirroring the framework,
+  // where it also bypasses auth), and every answer then walks the response
+  // stages in the framework's fixed order: CORS before ETag.
+  const origin = layerOptions.corsOrigin;
+  if (origin !== null && String(request.method || '') === 'OPTIONS') {
+    return {
+      status: 204,
+      body: null,
+      headers: {
+        'access-control-allow-origin': origin,
+        'access-control-allow-methods': 'GET, POST, PUT, DELETE, OPTIONS',
+        'access-control-allow-headers': 'Authorization, Content-Type',
+        vary: 'Origin',
+      },
+    };
+  }
   const response = serve(request);
   response.headers = { ...response.headers, 'content-type': 'application/json' };
+  stageCors(response);
   return stageEtag(response, requestHeaders(request), String(request.method || ''));
+}
+
+// Stage 2 of the response pipeline, mirroring the framework: a configured
+// origin is stamped onto every answer that does not carry one, and the
+// negotiation is recorded with `Vary: Origin`.
+function stageCors(response) {
+  const origin = layerOptions.corsOrigin;
+  if (origin === null) return;
+  if (!Object.hasOwn(response.headers, 'access-control-allow-origin')) {
+    response.headers['access-control-allow-origin'] = origin;
+  }
+  addVary(response.headers, 'Origin');
+}
+
+// Merge one value into `Vary`, mirroring the framework's `addVary`: an
+// existing header is appended to as a comma list without duplicates.
+function addVary(headers, value) {
+  const current = headers.vary;
+  if (typeof current === 'string') {
+    if (!current.split(',').some((field) => field.trim() === value)) {
+      headers.vary = current + ', ' + value;
+    }
+  } else {
+    headers.vary = value;
+  }
 }
 
 // The request headers other than the Content-Type, keyed by lowercase name.
@@ -312,6 +357,7 @@ function stageEtag(response, headers, method) {
   }
   const body = canonicalJson(response.body);
   const etag = etagFor(body);
+  response.headers = { ...response.headers, etag };
   const compresses =
     acceptsGzip(headers) && Buffer.byteLength(body, 'utf8') > GZIP_THRESHOLD_BYTES;
   if (
@@ -319,11 +365,22 @@ function stageEtag(response, headers, method) {
     typeof headers['if-none-match'] === 'string' &&
     ifNoneMatchMatches(headers['if-none-match'], etag)
   ) {
-    const kept = { etag };
-    if (compresses) kept.vary = 'Accept-Encoding';
+    // A `304` keeps validator and caching headers and drops representation
+    // headers such as `content-type`, mirroring the framework's retain set.
+    const kept = {};
+    for (const [name, value] of Object.entries(response.headers)) {
+      if (
+        name === 'etag' ||
+        name === 'vary' ||
+        name === 'cache-control' ||
+        name.startsWith('access-control-')
+      ) {
+        kept[name] = value;
+      }
+    }
+    if (compresses) addVary(kept, 'Accept-Encoding');
     return { status: 304, body: '', headers: kept };
   }
-  response.headers = { ...response.headers, etag };
   return response;
 }
 
@@ -458,6 +515,10 @@ rl.on('line', (line) => {
         app: (message.ir && message.ir.app) || '',
         models: (message.ir && message.ir.models) || [],
         api: (message.ir && message.ir.api) || [],
+      };
+      const raw = message.options && typeof message.options === 'object' ? message.options : {};
+      layerOptions = {
+        corsOrigin: typeof raw.corsOrigin === 'string' ? raw.corsOrigin : null,
       };
       tables.clear();
       write({ type: 'ready', ok: true, protocol: PROTOCOL });

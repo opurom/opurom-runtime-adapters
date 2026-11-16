@@ -29,6 +29,27 @@ pub const MAX_BODY_BYTES: usize = 1024 * 1024;
 use serde_json::{json, Value};
 use std::fmt;
 
+/// Operator-level HTTP features, the adapter-side counterpart of the
+/// framework's environment configuration. Everything defaults to off, exactly
+/// like the framework defaults, and never travels in the IR: the IR is
+/// application-defined, this is operator configuration.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct LayerOptions {
+    /// The fixed CORS origin emitted verbatim in
+    /// `Access-Control-Allow-Origin`; the request's `Origin` header is never
+    /// used to build a response header. `None` disables CORS, so `OPTIONS`
+    /// stays an ordinary routed method.
+    pub cors_origin: Option<String>,
+}
+
+impl LayerOptions {
+    /// Enable CORS with one fixed origin, e.g. "*" or "https://app.example".
+    pub fn with_cors_origin(mut self, origin: &str) -> Self {
+        self.cors_origin = Some(origin.to_owned());
+        self
+    }
+}
+
 /// A JSON-shaped request. `body` is `null` for requests without a payload.
 /// `content_type` mirrors the request Content-Type header; `None` means the
 /// header was absent, which every runtime treats as JSON.

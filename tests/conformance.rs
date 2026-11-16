@@ -1,6 +1,6 @@
 //! Conformance suite: the same sample request set against all four runtimes,
-//! plus tables of error-path, list-order, content-type, method-dispatch and
-//! etag cases checked byte-for-byte.
+//! plus tables of error-path, list-order, content-type, method-dispatch, etag
+//! and CORS cases checked byte-for-byte.
 //!
 //! The runtimes must produce byte-identical canonical responses, the Node
 //! runtime must fail cleanly when its binary is missing, and the bounded
@@ -10,7 +10,8 @@ use opurom_runtime_adapters::adapters::{
     default_host_script, Edge, Embedded, NativeRust, NodeConfig, NodeJs,
 };
 use opurom_runtime_adapters::{
-    sample_checks, AdapterError, Check, FullstackIr, Request, RuntimeAdapter, MAX_BODY_BYTES,
+    sample_checks, AdapterError, Check, FullstackIr, LayerOptions, Request, RuntimeAdapter,
+    MAX_BODY_BYTES,
 };
 use serde_json::{json, Value};
 use std::path::PathBuf;
@@ -527,11 +528,18 @@ fn parity_cases() -> Vec<ParityCase> {
 }
 
 fn parity_adapters(ir: &FullstackIr) -> Vec<Box<dyn RuntimeAdapter>> {
+    parity_adapters_with(ir, &LayerOptions::default())
+}
+
+fn parity_adapters_with(ir: &FullstackIr, options: &LayerOptions) -> Vec<Box<dyn RuntimeAdapter>> {
     vec![
-        Box::new(NativeRust::new(ir.clone())),
-        Box::new(NodeJs::new(ir.clone())),
-        Box::new(Edge::new(ir.clone())),
-        Box::new(Embedded::new(ir.clone())),
+        Box::new(NativeRust::new(ir.clone()).with_options(options.clone())),
+        Box::new(NodeJs::with_config(
+            ir.clone(),
+            NodeConfig::new(default_host_script()).with_options(options.clone()),
+        )),
+        Box::new(Edge::new(ir.clone()).with_options(options.clone())),
+        Box::new(Embedded::new(ir.clone()).with_options(options.clone())),
     ]
 }
 
@@ -550,11 +558,19 @@ fn run_requests(adapter: &mut dyn RuntimeAdapter, requests: &[Request]) -> Vec<V
 /// byte-identical across runtimes, and each case's last response is pinned to
 /// the exact canonical bytes in `expected`.
 fn assert_cross_runtime_parity(ir: &FullstackIr, cases: &[ParityCase]) {
+    assert_cross_runtime_parity_with(ir, &LayerOptions::default(), cases)
+}
+
+fn assert_cross_runtime_parity_with(
+    ir: &FullstackIr,
+    options: &LayerOptions,
+    cases: &[ParityCase],
+) {
     let expected_names = ["native", "node", "edge", "embedded"];
 
     for case in cases {
         let mut answers: Vec<(String, Vec<Vec<u8>>)> = Vec::new();
-        for mut adapter in parity_adapters(ir) {
+        for mut adapter in parity_adapters_with(ir, options) {
             let bytes = run_requests(adapter.as_mut(), &case.requests);
             let name = adapter.name().to_owned();
             adapter.shutdown().expect("the adapter shuts down");
@@ -718,6 +734,60 @@ fn all_runtimes_share_the_etag_bytes() {
     let cases = etag_cases();
     assert_cross_runtime_parity(&ir, &cases);
     assert_eq!(cases.len(), 6);
+}
+
+/// The fixed-allow-list preflight answer, identical for every `OPTIONS`
+/// request whatever path it targets, mirroring the framework.
+const PREFLIGHT_204: &[u8] = br#"{"body":null,"headers":{"access-control-allow-headers":"Authorization, Content-Type","access-control-allow-methods":"GET, POST, PUT, DELETE, OPTIONS","access-control-allow-origin":"*","vary":"Origin"},"status":204}"#;
+/// With CORS configured, every routed answer carries the origin and the
+/// negotiation marker, including error answers.
+const NOT_FOUND_CORS: &[u8] = br#"{"body":{"error":"not_found"},"headers":{"access-control-allow-origin":"*","content-type":"application/json","vary":"Origin"},"status":404}"#;
+/// A `304` keeps the `Access-Control-*` header the CORS stage added before
+/// the ETag stage ran.
+const CONDITIONAL_304_CORS: &[u8] = br#"{"body":"","headers":{"access-control-allow-origin":"*","etag":"\"d4c1a9335a7ec9fa\"","vary":"Origin"},"status":304}"#;
+
+fn preflight(path: &str) -> Request {
+    Request::new("OPTIONS", path, Value::Null)
+}
+
+/// CORS parity, mirroring the framework: with an origin configured, every
+/// `OPTIONS` request is a preflight `204` with the fixed allow headers, every
+/// answer carries the origin plus `Vary: Origin`, and a `304` keeps the
+/// origin header. The request's `Origin` is never echoed: the pins contain no
+/// request-derived value. Without configuration `OPTIONS` stays a routed
+/// method answering 405, pinned by the method-dispatch suite.
+#[test]
+fn all_runtimes_share_the_cors_bytes() {
+    let ir = todo_ir();
+    let options = LayerOptions::default().with_cors_origin("*");
+    let row = json!({ "title": "x", "done": false });
+    let cases = vec![
+        ParityCase {
+            name: "preflight-collection",
+            requests: vec![preflight("/todos")],
+            expected: PREFLIGHT_204,
+        },
+        ParityCase {
+            name: "preflight-unknown-path",
+            requests: vec![preflight("/__missing__")],
+            expected: PREFLIGHT_204,
+        },
+        ParityCase {
+            name: "routed-answer-carries-the-origin",
+            requests: vec![get("/todos/999")],
+            expected: NOT_FOUND_CORS,
+        },
+        ParityCase {
+            name: "304-keeps-access-control",
+            requests: vec![
+                post(row.clone()),
+                get("/todos/1").with_header("if-none-match", ROW_X_ETAG),
+            ],
+            expected: CONDITIONAL_304_CORS,
+        },
+    ];
+    assert_cross_runtime_parity_with(&ir, &options, &cases);
+    assert_eq!(cases.len(), 4);
 }
 
 /// framework rules pins `GET /health` to the app identity. Every

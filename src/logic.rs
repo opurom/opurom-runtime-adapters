@@ -13,7 +13,7 @@
 
 use crate::ir::{matches_kind, FieldKind, FullstackIr, IrApi, IrModel};
 use crate::store::Store;
-use crate::{AdapterError, Request, Response};
+use crate::{AdapterError, LayerOptions, Request, Response};
 use serde_json::{json, Map, Value};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -260,9 +260,77 @@ pub fn handle(
     store: &mut dyn Store,
     req: &Request,
     max_body: usize,
+    options: &LayerOptions,
 ) -> Result<Response, AdapterError> {
-    let routed = route_response(ir, store, req, max_body)?;
-    Ok(stage_etag(routed, req))
+    // The preflight answer bypasses routing entirely (mirroring the framework,
+    // where it also bypasses auth), and every answer then walks the response
+    // stages in the framework's fixed order: CORS before ETag.
+    let mut response = match cors_preflight(req, options) {
+        Some(preflight) => preflight,
+        None => route_response(ir, store, req, max_body)?,
+    };
+    stage_cors(&mut response, options);
+    Ok(stage_etag(response, req))
+}
+
+/// The fixed-allow-list CORS preflight answer, mirroring the framework: when
+/// CORS is configured, any `OPTIONS` request gets a bodyless `204` with the
+/// allow headers, whatever path it targets.
+fn cors_preflight(req: &Request, options: &LayerOptions) -> Option<Response> {
+    let origin = options.cors_origin.as_deref()?;
+    if req.method != "OPTIONS" {
+        return None;
+    }
+    Some(Response {
+        status: 204,
+        body: Value::Null,
+        headers: [
+            ("access-control-allow-origin", origin.to_owned()),
+            (
+                "access-control-allow-methods",
+                "GET, POST, PUT, DELETE, OPTIONS".to_owned(),
+            ),
+            (
+                "access-control-allow-headers",
+                "Authorization, Content-Type".to_owned(),
+            ),
+            ("vary", "Origin".to_owned()),
+        ]
+        .into_iter()
+        .map(|(name, value)| (name.to_owned(), value))
+        .collect(),
+    })
+}
+
+/// Stage 2 of the response pipeline, mirroring the framework: a configured
+/// origin is stamped onto every answer that does not carry one, and the
+/// negotiation is recorded with `Vary: Origin`.
+fn stage_cors(response: &mut Response, options: &LayerOptions) {
+    let Some(origin) = options.cors_origin.as_deref() else {
+        return;
+    };
+    if !response.headers.contains_key("access-control-allow-origin") {
+        response
+            .headers
+            .insert("access-control-allow-origin".to_owned(), origin.to_owned());
+    }
+    add_vary(response, "Origin");
+}
+
+/// Merge one value into `Vary`, mirroring the framework's `add_vary`: an
+/// existing header is appended to as a comma list without duplicates.
+fn add_vary(response: &mut Response, value: &str) {
+    match response.headers.get_mut("vary") {
+        Some(current) => {
+            if !current.split(',').any(|field| field.trim() == value) {
+                current.push_str(", ");
+                current.push_str(value);
+            }
+        }
+        None => {
+            response.headers.insert("vary".to_owned(), value.to_owned());
+        }
+    }
 }
 
 /// The routing and CRUD pipeline: validation, health, dispatch.
@@ -585,9 +653,7 @@ fn stage_etag(mut response: Response, req: &Request) -> Response {
                         || name.starts_with("access-control-")
                 });
                 if compresses {
-                    response
-                        .headers
-                        .insert("vary".to_owned(), "Accept-Encoding".to_owned());
+                    add_vary(&mut response, "Accept-Encoding");
                 }
             }
         }

@@ -3,7 +3,7 @@
 use crate::ir::FullstackIr;
 use crate::logic;
 use crate::store::{MapStore, Store};
-use crate::{AdapterError, Capabilities, Request, Response, RuntimeAdapter};
+use crate::{AdapterError, Capabilities, LayerOptions, Request, Response, RuntimeAdapter};
 
 /// The reference runtime: the business logic compiled into this process.
 ///
@@ -13,6 +13,7 @@ pub struct NativeRust {
     ir: FullstackIr,
     store: MapStore,
     capabilities: Capabilities,
+    options: LayerOptions,
 }
 
 impl NativeRust {
@@ -27,7 +28,14 @@ impl NativeRust {
                 network: false,
                 max_body: crate::MAX_BODY_BYTES,
             },
+            options: LayerOptions::default(),
         }
+    }
+
+    /// Set the operator layer options, e.g. enabling CORS with one origin.
+    pub fn with_options(mut self, options: LayerOptions) -> Self {
+        self.options = options;
+        self
     }
 }
 
@@ -41,7 +49,13 @@ impl RuntimeAdapter for NativeRust {
     }
 
     fn invoke(&mut self, req: &Request) -> Result<Response, AdapterError> {
-        logic::handle(&self.ir, &mut self.store, req, self.capabilities.max_body)
+        logic::handle(
+            &self.ir,
+            &mut self.store,
+            req,
+            self.capabilities.max_body,
+            &self.options,
+        )
     }
 
     fn shutdown(&mut self) -> Result<(), AdapterError> {

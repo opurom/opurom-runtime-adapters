@@ -4,8 +4,8 @@
 //! logic as the Rust adapters and speaks line-delimited JSON over stdin/stdout:
 //!
 //! ```text
-//! -> {"type":"handshake","ir":{...}}
-//! <- {"type":"ready","ok":true,"protocol":"opurom-runtime-adapters/3"}
+//! -> {"type":"handshake","ir":{...},"options":{"corsOrigin":null}}
+//! <- {"type":"ready","ok":true,"protocol":"opurom-runtime-adapters/4"}
 //! -> {"type":"invoke","request":{"method":"GET","path":"/todos","body":null,"contentType":null,"headers":{}}}
 //! <- {"type":"response","status":200,"body":"[{\"id\":1}]","headers":{"content-type":"application/json"}}
 //! -> {"type":"shutdown"}
@@ -16,7 +16,7 @@
 //! `AdapterError::Timeout`, never a hang and never a panic.
 
 use crate::ir::FullstackIr;
-use crate::{AdapterError, Capabilities, Request, Response, RuntimeAdapter};
+use crate::{AdapterError, Capabilities, LayerOptions, Request, Response, RuntimeAdapter};
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
 use std::io::{BufRead, BufReader, Write};
@@ -31,10 +31,11 @@ pub const DEFAULT_TIMEOUT_MS: u64 = 1000;
 
 /// Protocol id the host must echo in its ready frame. Bumped with the frame
 /// schema: response frames carry required `headers` since /2, request frames
-/// carry required `headers` since /3. The id is asserted at the handshake
+/// carry required `headers` since /3 and the handshake carries the optional
+/// `options` section since /4. The id is asserted at the handshake
 /// because the host script is read from disk at runtime, so a stale script
 /// must fail fast instead of silently dropping frame fields.
-pub const HOST_PROTOCOL: &str = "opurom-runtime-adapters/3";
+pub const HOST_PROTOCOL: &str = "opurom-runtime-adapters/4";
 
 /// Grace period given to the host to answer the shutdown message.
 const SHUTDOWN_GRACE_MS: u64 = 200;
@@ -54,6 +55,8 @@ pub struct NodeConfig {
     pub host_script: PathBuf,
     /// Bound for one round trip, in milliseconds.
     pub timeout_ms: u64,
+    /// Operator layer options handed over in the handshake frame.
+    pub options: LayerOptions,
 }
 
 impl NodeConfig {
@@ -62,7 +65,14 @@ impl NodeConfig {
             node_binary: "node".into(),
             host_script: host_script.into(),
             timeout_ms: DEFAULT_TIMEOUT_MS,
+            options: LayerOptions::default(),
         }
+    }
+
+    /// Set the operator layer options handed over in the handshake frame.
+    pub fn with_options(mut self, options: LayerOptions) -> Self {
+        self.options = options;
+        self
     }
 
     pub fn with_binary(mut self, binary: impl Into<String>) -> Self {
@@ -217,7 +227,11 @@ impl NodeJs {
         self.lines = Some(receiver);
         self.reader = Some(reader);
 
-        self.send(&json!({ "type": "handshake", "ir": self.ir.to_value() }))?;
+        self.send(&json!({
+            "type": "handshake",
+            "ir": self.ir.to_value(),
+            "options": { "corsOrigin": self.config.options.cors_origin },
+        }))?;
         match self.read_message(self.config.timeout_ms)? {
             Some(message) if message.get("type").and_then(Value::as_str) == Some("ready") => {
                 let protocol = message.get("protocol").and_then(Value::as_str);
