@@ -147,7 +147,8 @@ framework rules.
 `GET /health` answers `200 {"ok":true,"app":"<name>","version":"0.1.0"}` on all
 four runtimes, byte-identically. It is fixed and model-independent, so it is
 answered before model route matching and only for `GET`/`HEAD`; any other
-method on `/health` answers `405 {"error":"method_not_allowed"}` because
+method on `/health` answers
+`405 {"error":"method_not_allowed"}` with `allow: GET, HEAD` because
 `/health` is a registered GET route. The `app` value is the IR's `app` field.
 
 ### Method dispatch
@@ -157,12 +158,15 @@ Dispatch mirrors the framework router:
 | Request | Answer |
 | --- | --- |
 | unknown path, any method | `404 {"error":"not_found"}` |
-| known path, no route for the method (`PATCH /todos`, `POST /todos/1`) | `405 {"error":"method_not_allowed"}` |
+| known path, no route for the method (`PATCH /todos`, `POST /todos/1`) | `405 {"error":"method_not_allowed"}` with an `allow` header |
 | `HEAD` on a path a `GET` route serves | the `GET` route's JSON response |
 
-`405` is decided by the path pattern alone: a path no api pattern matches stays
-`404` whatever the method. `HEAD` resolves against the `GET` route, so its
-JSON-level answer is byte-identical to `GET`; the wire layer omits the body.
+The `allow` value lists the path's registered methods, deduped in the fixed
+order `GET, HEAD, POST, PUT, DELETE`: the collection route answers
+`allow: GET, HEAD, POST`, the item route `allow: GET, HEAD, PUT, DELETE`. A
+path no api pattern matches stays `404` whatever the method, without `allow`.
+`HEAD` resolves against the `GET` route, so its JSON-level answer is
+byte-identical to `GET`; the wire layer omits the body.
 
 ### Error paths and list order
 

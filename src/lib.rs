@@ -89,6 +89,13 @@ impl Response {
         }
     }
 
+    /// Attach one more header, preserving the lowercase canonical form. The
+    /// first header that a response gains after the builder is [`Response::new`].
+    pub fn with_header(mut self, name: &str, value: &str) -> Self {
+        self.headers.insert(name.to_owned(), value.to_owned());
+        self
+    }
+
     /// Canonical wire form used for byte comparisons.
     ///
     /// `serde_json::Value` objects are backed by a `BTreeMap` with the default

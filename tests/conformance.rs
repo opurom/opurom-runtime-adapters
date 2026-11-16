@@ -13,7 +13,6 @@ use opurom_runtime_adapters::{
     sample_checks, AdapterError, Check, FullstackIr, Request, RuntimeAdapter, MAX_BODY_BYTES,
 };
 use serde_json::{json, Value};
-use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 fn todo_ir() -> FullstackIr {
@@ -319,7 +318,13 @@ const CONFLICT: &[u8] =
     br#"{"body":{"error":"conflict"},"headers":{"content-type":"application/json"},"status":409}"#;
 const UNSUPPORTED_MEDIA_TYPE: &[u8] =
     br#"{"body":{"error":"unsupported_media_type"},"headers":{"content-type":"application/json"},"status":415}"#;
-const METHOD_NOT_ALLOWED: &[u8] = br#"{"body":{"error":"method_not_allowed"},"headers":{"content-type":"application/json"},"status":405}"#;
+/// The 405 bytes carry the `Allow` list of the path's registered methods, so
+/// the value differs per resource: the collection route registers GET/POST,
+/// the item route GET/PUT/DELETE, and `/health` registers only GET. `HEAD`
+/// always rides on `GET`.
+const METHOD_NOT_ALLOWED_COLLECTION: &[u8] = br#"{"body":{"error":"method_not_allowed"},"headers":{"allow":"GET, HEAD, POST","content-type":"application/json"},"status":405}"#;
+const METHOD_NOT_ALLOWED_ITEM: &[u8] = br#"{"body":{"error":"method_not_allowed"},"headers":{"allow":"GET, HEAD, PUT, DELETE","content-type":"application/json"},"status":405}"#;
+const METHOD_NOT_ALLOWED_HEALTH: &[u8] = br#"{"body":{"error":"method_not_allowed"},"headers":{"allow":"GET, HEAD","content-type":"application/json"},"status":405}"#;
 const EMPTY_LIST: &[u8] =
     br#"{"body":[],"headers":{"content-type":"application/json"},"status":200}"#;
 const PAYLOAD_TOO_LARGE: &[u8] = br#"{"body":{"error":"payload_too_large"},"headers":{"content-type":"application/json"},"status":413}"#;
@@ -663,7 +668,7 @@ fn health_cases() -> Vec<ParityCase> {
         ParityCase {
             name: "health-rejects-non-get",
             requests: vec![Request::new("POST", "/health", Value::Null)],
-            expected: METHOD_NOT_ALLOWED,
+            expected: METHOD_NOT_ALLOWED_HEALTH,
         },
     ]
 }
@@ -694,32 +699,32 @@ fn method_dispatch_cases() -> Vec<ParityCase> {
         ParityCase {
             name: "patch-known-collection",
             requests: vec![Request::new("PATCH", "/todos", Value::Null)],
-            expected: METHOD_NOT_ALLOWED,
+            expected: METHOD_NOT_ALLOWED_COLLECTION,
         },
         ParityCase {
             name: "put-undeclared-on-collection",
             requests: vec![put("/todos", row.clone())],
-            expected: METHOD_NOT_ALLOWED,
+            expected: METHOD_NOT_ALLOWED_COLLECTION,
         },
         ParityCase {
             name: "delete-known-collection",
             requests: vec![delete("/todos")],
-            expected: METHOD_NOT_ALLOWED,
+            expected: METHOD_NOT_ALLOWED_COLLECTION,
         },
         ParityCase {
             name: "create-undeclared-on-item-route",
             requests: vec![Request::new("POST", "/todos/1", row.clone())],
-            expected: METHOD_NOT_ALLOWED,
+            expected: METHOD_NOT_ALLOWED_ITEM,
         },
         ParityCase {
             name: "options-item-route",
             requests: vec![Request::new("OPTIONS", "/todos/1", Value::Null)],
-            expected: METHOD_NOT_ALLOWED,
+            expected: METHOD_NOT_ALLOWED_ITEM,
         },
         ParityCase {
             name: "patch-health",
             requests: vec![Request::new("PATCH", "/health", Value::Null)],
-            expected: METHOD_NOT_ALLOWED,
+            expected: METHOD_NOT_ALLOWED_HEALTH,
         },
         // Only an unmatched path is 404, whatever the method.
         ParityCase {
@@ -774,8 +779,6 @@ fn every_response_carries_json_content_type() {
         Request::new("PATCH", "/todos", Value::Null),
         get("/health"),
     ];
-    let mut expected = BTreeMap::new();
-    expected.insert("content-type".to_owned(), "application/json".to_owned());
 
     for mut adapter in parity_adapters(&ir) {
         let name = adapter.name().to_owned();
@@ -783,7 +786,14 @@ fn every_response_carries_json_content_type() {
             let response = adapter
                 .invoke(request)
                 .unwrap_or_else(|error| panic!("{name} failed on {}: {error}", request.path));
-            assert_eq!(response.headers, expected, "{name} on {}", request.path);
+            // A 405 carries an extra `allow` header, so the normative header is
+            // asserted by lookup, not by exact map equality.
+            assert_eq!(
+                response.headers.get("content-type").map(String::as_str),
+                Some("application/json"),
+                "{name} on {}",
+                request.path
+            );
         }
         adapter.shutdown().expect("the adapter shuts down");
     }

@@ -122,21 +122,48 @@ function verbFor(method, hasParams) {
   return null;
 }
 
+// The HTTP method a declared handler verb registers, mirroring the framework
+// router's route table. Unknown handler verbs register nothing.
+function handlerMethod(handler) {
+  if (handler === 'list' || handler === 'get') return 'GET';
+  if (handler === 'create') return 'POST';
+  if (handler === 'update') return 'PUT';
+  if (handler === 'delete') return 'DELETE';
+  return null;
+}
+
+// The `Allow` value for a matched path: every method the matching patterns
+// register, deduped, in the fixed order the framework router emits.
+function allowValue(methods) {
+  return ['GET', 'HEAD', 'POST', 'PUT', 'DELETE']
+    .filter((method) => methods.has(method))
+    .join(', ');
+}
+
 // Outcome of matching a request against the IR `api` array, mirroring the
 // framework router: every matching pattern is considered, a pattern that
-// matches but declares no handler for the resolved verb answers 405, and only
-// a path no pattern matches is 404. An unmatched outcome carries only
-// `pathMatched`.
+// matches but declares no handler for the resolved verb answers 405 with an
+// `Allow` list of the path's registered methods, and only a path no pattern
+// matches is 404. An unmatched outcome carries only `pathMatched` plus the
+// computed `allow` value.
 function resolveRoute(requestSegments, method) {
   let pathMatched = false;
+  const registered = new Set();
   for (const api of ir.api) {
     const params = matchPattern(api.path, requestSegments);
     if (params === null) continue;
     pathMatched = true;
+    for (const handler of api.handlers) {
+      const http = handlerMethod(handler);
+      if (http === null) continue;
+      registered.add(http);
+      // HEAD is served by the GET route, so it appears alongside it.
+      if (http === 'GET') registered.add('HEAD');
+    }
     const verb = verbFor(method, params.size > 0);
     if (verb !== null && api.handlers.includes(verb)) return { api, params, verb };
   }
-  return { pathMatched };
+  return { pathMatched, allow: allowValue(registered) };
 }
 
 function nextId(model, keyName) {
@@ -181,8 +208,8 @@ function notFound() {
   return { status: 404, body: { error: 'not_found' } };
 }
 
-function methodNotAllowed() {
-  return { status: 405, body: { error: 'method_not_allowed' } };
+function methodNotAllowed(allow) {
+  return { status: 405, body: { error: 'method_not_allowed' }, headers: { allow } };
 }
 
 // The media-type rule shared by every runtime: the base type before any `;`
@@ -200,10 +227,11 @@ function invalidBody(field) {
 }
 
 // The response builder: every JSON response carries the normative
-// `content-type`, mirroring `Response::new` on the Rust side.
+// `content-type`, mirroring `Response::new` on the Rust side; headers a verb
+// already attached (the `Allow` list on a 405) are kept.
 function handle(request) {
   const response = serve(request);
-  response.headers = { 'content-type': 'application/json' };
+  response.headers = { ...response.headers, 'content-type': 'application/json' };
   return response;
 }
 
@@ -231,12 +259,12 @@ function serve(request) {
     if (method === 'GET' || method === 'HEAD') {
       return { status: 200, body: { ok: true, app: ir.app, version: '0.1.0' } };
     }
-    return methodNotAllowed();
+    return methodNotAllowed('GET, HEAD');
   }
 
   const resolved = resolveRoute(segments(path), method);
   if (resolved.api === undefined) {
-    return resolved.pathMatched ? methodNotAllowed() : notFound();
+    return resolved.pathMatched ? methodNotAllowed(resolved.allow) : notFound();
   }
   const { api, params, verb } = resolved;
 

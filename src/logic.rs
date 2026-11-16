@@ -7,15 +7,15 @@
 //!
 //! Responses follow framework rules: list -> array, create -> row,
 //! get/update -> row or 404, delete -> `{"deleted":true}` or 404, unknown path
-//! -> 404 JSON, known path with no route for the method -> 405 JSON, `HEAD`
-//! served by the `GET` route. Body size is capped by the runtime's
-//! `Capabilities::max_body`.
+//! -> 404 JSON, known path with no route for the method -> 405 JSON with an
+//! `Allow` list of the path's registered methods, `HEAD` served by the `GET`
+//! route. Body size is capped by the runtime's `Capabilities::max_body`.
 
 use crate::ir::{matches_kind, FieldKind, FullstackIr, IrApi, IrModel};
 use crate::store::Store;
 use crate::{AdapterError, Request, Response};
 use serde_json::{json, Map, Value};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Check {
@@ -83,27 +83,63 @@ fn verb_for(method: &str, has_params: bool) -> Option<&'static str> {
     }
 }
 
+/// The HTTP method a declared handler verb registers, mirroring the framework
+/// router's route table. Unknown handler verbs register nothing.
+fn handler_method(handler: &str) -> Option<&'static str> {
+    match handler {
+        "list" | "get" => Some("GET"),
+        "create" => Some("POST"),
+        "update" => Some("PUT"),
+        "delete" => Some("DELETE"),
+        _ => None,
+    }
+}
+
+/// The `Allow` value for a matched path: every method the matching patterns
+/// register, deduped, in the fixed order the framework router emits.
+fn allow_value(methods: &BTreeSet<&'static str>) -> String {
+    ["GET", "HEAD", "POST", "PUT", "DELETE"]
+        .iter()
+        .filter(|method| methods.contains(**method))
+        .copied()
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 /// Outcome of matching a request against the IR `api` array, mirroring the
 /// framework router: every matching pattern is considered, a pattern that
-/// matches but declares no handler for the resolved verb answers 405, and only
-/// a path no pattern matches is 404.
+/// matches but declares no handler for the resolved verb answers 405 with an
+/// `Allow` list of the path's registered methods, and only a path no pattern
+/// matches is 404.
 enum Route<'a> {
     Matched {
         api: &'a IrApi,
         params: BTreeMap<String, String>,
         verb: &'static str,
     },
-    MethodNotAllowed,
+    MethodNotAllowed {
+        allow: String,
+    },
     NotFound,
 }
 
 fn resolve_route<'a>(ir: &'a FullstackIr, request_segments: &[&str], method: &str) -> Route<'a> {
     let mut path_matched = false;
+    let mut registered: BTreeSet<&'static str> = BTreeSet::new();
     for api in &ir.api {
         let Some(params) = match_pattern(&api.path, request_segments) else {
             continue;
         };
         path_matched = true;
+        for handler in &api.handlers {
+            if let Some(registered_method) = handler_method(handler) {
+                registered.insert(registered_method);
+                // `HEAD` is served by the `GET` route, so it appears alongside it.
+                if registered_method == "GET" {
+                    registered.insert("HEAD");
+                }
+            }
+        }
         let Some(verb) = verb_for(method, !params.is_empty()) else {
             continue;
         };
@@ -112,7 +148,9 @@ fn resolve_route<'a>(ir: &'a FullstackIr, request_segments: &[&str], method: &st
         }
     }
     if path_matched {
-        Route::MethodNotAllowed
+        Route::MethodNotAllowed {
+            allow: allow_value(&registered),
+        }
     } else {
         Route::NotFound
     }
@@ -155,8 +193,8 @@ fn not_found() -> Response {
     Response::new(404, json!({ "error": "not_found" }))
 }
 
-fn method_not_allowed() -> Response {
-    Response::new(405, json!({ "error": "method_not_allowed" }))
+fn method_not_allowed(allow: &str) -> Response {
+    Response::new(405, json!({ "error": "method_not_allowed" })).with_header("allow", allow)
 }
 
 fn invalid_body(field: Option<&str>) -> Response {
@@ -250,13 +288,13 @@ pub fn handle(
                 json!({ "ok": true, "app": ir.app, "version": "0.1.0" }),
             ));
         }
-        return Ok(method_not_allowed());
+        return Ok(method_not_allowed("GET, HEAD"));
     }
 
     let request_segments = segments(&req.path);
     let (api, params, verb) = match resolve_route(ir, &request_segments, &req.method) {
         Route::Matched { api, params, verb } => (api, params, verb),
-        Route::MethodNotAllowed => return Ok(method_not_allowed()),
+        Route::MethodNotAllowed { allow } => return Ok(method_not_allowed(&allow)),
         Route::NotFound => return Ok(not_found()),
     };
     let Some(model) = ir.model(&api.model) else {
