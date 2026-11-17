@@ -165,8 +165,20 @@ impl Response {
     }
 }
 
-/// What a runtime is able to do. These describe the runtime, not what the
-/// sample checks happen to use.
+/// Canonical capability names of the support matrix, sorted.
+pub const CAPABILITY_KINDS: [&str; 9] = [
+    "app_info",
+    "camera",
+    "clipboard",
+    "haptics",
+    "location",
+    "notifications",
+    "storage",
+    "system_sound",
+    "system_ui",
+];
+
+/// What a runtime is able to do: runtime traits plus the capability matrix.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Capabilities {
     pub async_io: bool,
@@ -174,6 +186,15 @@ pub struct Capabilities {
     pub fs: bool,
     pub network: bool,
     pub max_body: usize,
+    /// Names from [`CAPABILITY_KINDS`] this runtime implements.
+    pub supported: &'static [&'static str],
+}
+
+impl Capabilities {
+    /// Whether the runtime declares an implementation for `capability`.
+    pub fn supports(&self, capability: &str) -> bool {
+        self.supported.iter().any(|name| *name == capability)
+    }
 }
 
 /// Verification status of a runtime row in the conformance report.
@@ -231,10 +252,76 @@ impl fmt::Display for AdapterError {
 
 impl std::error::Error for AdapterError {}
 
+/// Stable capability error codes, snake_case. These are the `code` values of
+/// the typed capability error, mirroring `PlatformException.code`.
+pub mod capability_codes {
+    pub const UNIMPLEMENTED: &str = "unimplemented";
+    pub const ERROR: &str = "error";
+    pub const INVALID_ARGUMENT: &str = "invalid_argument";
+    pub const PERMISSION_DENIED: &str = "permission_denied";
+    pub const UNAVAILABLE: &str = "unavailable";
+    pub const DISPOSED: &str = "disposed";
+    pub const BUDGET_EXCEEDED: &str = "budget_exceeded";
+}
+
+/// One capability call. Arguments and results use the same codec-neutral JSON
+/// value set as the HTTP body, so no second serialization contract is added.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CapabilityCall {
+    pub capability: String,
+    pub method: String,
+    pub arguments: Value,
+}
+
+impl CapabilityCall {
+    pub fn new(capability: &str, method: &str, arguments: Value) -> Self {
+        Self {
+            capability: capability.to_owned(),
+            method: method.to_owned(),
+            arguments,
+        }
+    }
+}
+
+/// A capability failure as a value: code, message and structured details.
+/// Errors never panic across the adapter boundary.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CapabilityError {
+    pub code: String,
+    pub message: String,
+    pub details: Value,
+}
+
+impl CapabilityError {
+    pub fn new(code: &str, message: impl Into<String>, details: Value) -> Self {
+        Self {
+            code: code.to_owned(),
+            message: message.into(),
+            details,
+        }
+    }
+
+    /// The typed answer for a capability a runtime does not implement.
+    pub fn unimplemented(capability: &str) -> Self {
+        Self::new(
+            capability_codes::UNIMPLEMENTED,
+            format!("capability {capability} is not implemented by this runtime"),
+            Value::Null,
+        )
+    }
+}
+
 /// The one ABI every backend runtime implements.
 pub trait RuntimeAdapter {
     fn name(&self) -> &str;
     fn capabilities(&self) -> Capabilities;
     fn invoke(&mut self, req: &Request) -> Result<Response, AdapterError>;
     fn shutdown(&mut self) -> Result<(), AdapterError>;
+
+    /// Capability hook. The default makes this method additive: a runtime that
+    /// does not implement a capability answers typed `unimplemented`, and no
+    /// existing `RuntimeAdapter` implementation has to change.
+    fn invoke_capability(&mut self, call: &CapabilityCall) -> Result<Value, CapabilityError> {
+        Err(CapabilityError::unimplemented(&call.capability))
+    }
 }

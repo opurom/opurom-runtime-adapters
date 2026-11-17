@@ -117,6 +117,7 @@ impl NodeJs {
                 fs: false,
                 network: false,
                 max_body: crate::MAX_BODY_BYTES,
+                supported: &[],
             },
             child: None,
             stdin: None,

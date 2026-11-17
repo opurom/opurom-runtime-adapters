@@ -10,8 +10,8 @@ use opurom_runtime_adapters::adapters::{
     default_host_script, Edge, Embedded, NativeRust, NodeConfig, NodeJs,
 };
 use opurom_runtime_adapters::{
-    sample_checks, AdapterError, Check, FullstackIr, LayerOptions, Request, RuntimeAdapter,
-    MAX_BODY_BYTES,
+    capability_codes, sample_checks, AdapterError, CapabilityCall, Check, FullstackIr,
+    LayerOptions, Request, RuntimeAdapter, CAPABILITY_KINDS, MAX_BODY_BYTES,
 };
 use serde_json::{json, Value};
 use std::path::PathBuf;
@@ -1191,4 +1191,44 @@ fn all_runtimes_agree_on_two_parameter_routes() {
     for (index, expected) in nested_expected().iter().enumerate() {
         assert_eq!(reference[index].as_slice(), *expected, "step {index}");
     }
+}
+
+/// The capability hook is additive: every runtime keeps the default typed
+/// `unimplemented` answer, including for an unknown capability and malformed
+/// arguments. No call may panic and the HTTP ABI stays byte-identical.
+#[test]
+fn capability_default_is_typed_unimplemented_on_every_runtime() {
+    let ir = todo_ir();
+    for mut adapter in parity_adapters(&ir) {
+        let name = adapter.name().to_owned();
+        for call in [
+            CapabilityCall::new("camera", "available", Value::Null),
+            CapabilityCall::new("clipboard", "getData", json!({ "format": "text/plain" })),
+            CapabilityCall::new("storage", "getAll", json!([])),
+            CapabilityCall::new("not_a_capability", "anything", Value::Null),
+        ] {
+            let error = adapter
+                .invoke_capability(&call)
+                .expect_err("the default answer is an error value");
+            assert_eq!(error.code, capability_codes::UNIMPLEMENTED, "{name}");
+            assert!(
+                error.message.contains(&call.capability),
+                "{name}: {}",
+                error.message
+            );
+            assert_eq!(error.details, Value::Null, "{name}");
+        }
+        for kind in CAPABILITY_KINDS {
+            assert!(
+                !adapter.capabilities().supports(kind),
+                "{name} must not advertise an unimplemented capability ({kind})"
+            );
+        }
+        adapter.shutdown().expect("the adapter shuts down");
+    }
+    // The HTTP ABI is unchanged: the reference checks still pin the same bytes.
+    let mut native = NativeRust::new(todo_ir());
+    let bytes = run(&mut native, &sample_checks(&todo_ir()));
+    assert_eq!(bytes[0].as_slice(), EMPTY_LIST);
+    native.shutdown().expect("native shuts down");
 }

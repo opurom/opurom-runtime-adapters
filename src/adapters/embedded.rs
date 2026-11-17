@@ -33,6 +33,7 @@ impl Embedded {
                 fs: false,
                 network: false,
                 max_body: crate::MAX_BODY_BYTES,
+                supported: &[],
             },
             options: LayerOptions::default(),
         }
