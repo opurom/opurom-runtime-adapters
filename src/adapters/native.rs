@@ -32,7 +32,14 @@ impl NativeRust {
                 fs: false,
                 network: false,
                 max_body: crate::MAX_BODY_BYTES,
-                supported: &["app_info", "storage"],
+                supported: &[
+                    "app_info",
+                    "clipboard",
+                    "haptics",
+                    "storage",
+                    "system_sound",
+                    "system_ui",
+                ],
             },
             options: LayerOptions::default(),
         }

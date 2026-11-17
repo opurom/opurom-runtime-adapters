@@ -1203,7 +1203,7 @@ fn capability_unsupported_is_typed_unimplemented_on_every_runtime() {
         let name = adapter.name().to_owned();
         for call in [
             CapabilityCall::new("camera", "available", Value::Null),
-            CapabilityCall::new("clipboard", "getData", json!({ "format": "text/plain" })),
+            CapabilityCall::new("clipboard", "pasteImage", json!({ "format": "image/png" })),
             CapabilityCall::new("storage", "not_a_method", json!([])),
             CapabilityCall::new("not_a_capability", "anything", Value::Null),
         ] {
@@ -1219,7 +1219,10 @@ fn capability_unsupported_is_typed_unimplemented_on_every_runtime() {
             assert_eq!(error.details, Value::Null, "{name}");
         }
         for kind in CAPABILITY_KINDS {
-            let implemented = matches!(kind, "app_info" | "storage");
+            let implemented = matches!(
+                kind,
+                "app_info" | "clipboard" | "haptics" | "storage" | "system_sound" | "system_ui"
+            );
             assert_eq!(
                 adapter.capabilities().supports(kind),
                 implemented,
@@ -1306,6 +1309,80 @@ fn capability_storage_errors_are_typed_on_every_runtime() {
             assert_eq!(error.code, capability_codes::BUDGET_EXCEEDED, "{name}");
         } else {
             assert_eq!(result.expect("map-backed runtimes accept it"), json!(true));
+        }
+        adapter.shutdown().expect("the adapter shuts down");
+    }
+}
+
+/// The optional family follows Flutter's four degradation tiers: an optional
+/// read answers null, an optional query answers false, an optional command
+/// succeeds with no effect; an unknown method is still typed `unimplemented`.
+#[test]
+fn no_op_family_pins_degradation_tiers_on_every_runtime() {
+    let ir = todo_ir();
+    let calls = vec![
+        CapabilityCall::new("clipboard", "getData", json!({ "format": "text/plain" })),
+        CapabilityCall::new("clipboard", "hasStrings", Value::Null),
+        CapabilityCall::new(
+            "clipboard",
+            "setData",
+            json!({ "text": "copied", "format": "text/plain" }),
+        ),
+        CapabilityCall::new("haptics", "lightImpact", Value::Null),
+        CapabilityCall::new("system_sound", "play", json!({ "type": "click" })),
+        CapabilityCall::new(
+            "system_ui",
+            "setPreferredOrientations",
+            json!(["portraitUp"]),
+        ),
+    ];
+    let expected = vec![
+        Value::Null,
+        json!(false),
+        Value::Null,
+        Value::Null,
+        Value::Null,
+        Value::Null,
+    ];
+    let mut reference: Option<Vec<Value>> = None;
+    for mut adapter in parity_adapters(&ir) {
+        let name = adapter.name().to_owned();
+        let answers: Vec<Value> = calls
+            .iter()
+            .map(|call| {
+                adapter
+                    .invoke_capability(call)
+                    .unwrap_or_else(|error| panic!("{name}: {error:?}"))
+            })
+            .collect();
+        assert_eq!(answers, expected, "{name} drifted on the optional ladder");
+        match &reference {
+            Some(expected) => assert_eq!(&answers, expected, "{name} differs from native"),
+            None => reference = Some(answers),
+        }
+
+        let wrong_type = CapabilityCall::new("clipboard", "setData", json!({ "text": 7 }));
+        let error = adapter
+            .invoke_capability(&wrong_type)
+            .expect_err("a non-string clipboard payload is invalid");
+        assert_eq!(error.code, capability_codes::INVALID_ARGUMENT, "{name}");
+
+        let unknown = CapabilityCall::new("haptics", "vibrateForever", Value::Null);
+        let error = adapter
+            .invoke_capability(&unknown)
+            .expect_err("an unknown haptic method is not a fake success");
+        assert_eq!(error.code, capability_codes::UNIMPLEMENTED, "{name}");
+
+        for required in ["camera", "location", "notifications"] {
+            let call = CapabilityCall::new(required, "anything", Value::Null);
+            let error = adapter
+                .invoke_capability(&call)
+                .expect_err("required capabilities stay unimplemented");
+            assert_eq!(
+                error.code,
+                capability_codes::UNIMPLEMENTED,
+                "{name}: {required}"
+            );
         }
         adapter.shutdown().expect("the adapter shuts down");
     }

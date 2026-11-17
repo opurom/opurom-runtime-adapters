@@ -140,6 +140,47 @@ pub fn storage(store: &mut dyn Store, call: &CapabilityCall) -> Result<Value, Ca
     }
 }
 
+/// Optional host capabilities: a runtime without a device answers using
+/// Flutter's no-op ladder. Reads return null, queries return false, commands
+/// succeed without effect. An unrecognized method stays `unimplemented`, so an
+/// unknown operation never gets a fake success.
+fn no_op(capability: &str, call: &CapabilityCall) -> Result<Value, CapabilityError> {
+    let known = match capability {
+        "clipboard" => matches!(call.method.as_str(), "getData" | "hasStrings" | "setData"),
+        "haptics" => matches!(
+            call.method.as_str(),
+            "vibrate"
+                | "lightImpact"
+                | "mediumImpact"
+                | "heavyImpact"
+                | "selectionClick"
+                | "successNotification"
+                | "warningNotification"
+                | "errorNotification"
+        ),
+        "system_sound" => call.method == "play",
+        "system_ui" => matches!(
+            call.method.as_str(),
+            "setPreferredOrientations" | "setEnabledSystemUIMode"
+        ),
+        _ => false,
+    };
+    if !known {
+        return Err(method_not_implemented(&call.method, capability));
+    }
+    if capability == "clipboard" && call.method == "setData" {
+        let text = argument(call, "text")?;
+        if !text.is_string() {
+            return Err(invalid_argument("text"));
+        }
+    }
+    match (capability, call.method.as_str()) {
+        ("clipboard", "getData") => Ok(Value::Null),
+        ("clipboard", "hasStrings") => Ok(Value::Bool(false)),
+        _ => Ok(Value::Null),
+    }
+}
+
 fn app_info(app: &str, call: &CapabilityCall) -> Result<Value, CapabilityError> {
     match call.method.as_str() {
         "buildName" => Ok(Value::String(APP_VERSION.to_owned())),
@@ -161,6 +202,7 @@ pub fn dispatch(
     match call.capability.as_str() {
         "storage" => storage(store, call),
         "app_info" => app_info(app, call),
+        "clipboard" | "haptics" | "system_sound" | "system_ui" => no_op(&call.capability, call),
         _ => Err(CapabilityError::unimplemented(&call.capability)),
     }
 }
