@@ -1252,6 +1252,26 @@ fn capability_storage_and_app_info_match_across_runtimes() {
         CapabilityCall::new("storage", "getAll", Value::Null),
         CapabilityCall::new("app_info", "buildName", Value::Null),
         CapabilityCall::new("app_info", "buildNumber", Value::Null),
+        // The codec-neutral value set maps to the framework's
+        // StandardMessageCodec types: null, bool, int, double, string, list,
+        // map (message_codecs.dart:310-324, flutter 3.50.0). Bytes have no
+        // JSON value, so a storage write of raw bytes is not representable.
+        CapabilityCall::new("storage", "set", json!({ "key": "flag", "value": true })),
+        CapabilityCall::new("storage", "set", json!({ "key": "count", "value": 42 })),
+        CapabilityCall::new("storage", "set", json!({ "key": "ratio", "value": 2.5 })),
+        CapabilityCall::new(
+            "storage",
+            "set",
+            json!({ "key": "tags", "value": ["a", "b"] }),
+        ),
+        CapabilityCall::new(
+            "storage",
+            "set",
+            json!({ "key": "row", "value": { "a": 1 } }),
+        ),
+        CapabilityCall::new("storage", "getAll", Value::Null),
+        CapabilityCall::new("storage", "get", json!({ "key": "ratio" })),
+        CapabilityCall::new("storage", "get", json!({ "key": "row" })),
     ];
     let mut reference: Option<Vec<Value>> = None;
     for mut adapter in parity_adapters(&ir) {
@@ -1271,6 +1291,14 @@ fn capability_storage_and_app_info_match_across_runtimes() {
         assert_eq!(answers[4], json!({ "k": "v" }), "{name}: getAll");
         assert_eq!(answers[5], json!("0.1.0"), "{name}: build name");
         assert_eq!(answers[6], Value::Null, "{name}: build number");
+        let all = &answers[12];
+        assert_eq!(all["flag"], json!(true), "{name}: bool cell");
+        assert_eq!(all["count"], json!(42), "{name}: int cell");
+        assert_eq!(all["ratio"], json!(2.5), "{name}: double cell");
+        assert_eq!(all["tags"], json!(["a", "b"]), "{name}: list cell");
+        assert_eq!(all["row"], json!({ "a": 1 }), "{name}: map cell");
+        assert_eq!(answers[13], json!(2.5), "{name}: double round trip");
+        assert_eq!(answers[14], json!({ "a": 1 }), "{name}: map round trip");
         match &reference {
             Some(expected) => assert_eq!(&answers, expected, "{name} differs from native"),
             None => reference = Some(answers),
