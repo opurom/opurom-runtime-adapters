@@ -203,6 +203,11 @@ pub fn dispatch(
         "storage" => storage(store, call),
         "app_info" => app_info(app, call),
         "clipboard" | "haptics" | "system_sound" | "system_ui" => no_op(&call.capability, call),
+        // Required capabilities have no device on any backend runtime. They
+        // answer typed `unimplemented`; a fake success is never allowed.
+        "camera" | "location" | "notifications" => {
+            Err(CapabilityError::unimplemented(&call.capability))
+        }
         _ => Err(CapabilityError::unimplemented(&call.capability)),
     }
 }

@@ -1387,3 +1387,43 @@ fn no_op_family_pins_degradation_tiers_on_every_runtime() {
         adapter.shutdown().expect("the adapter shuts down");
     }
 }
+
+/// Required capabilities have no device on any backend runtime: every
+/// documented method answers typed `unimplemented` with a stable code, an
+/// empty details slot and no panic. The matrix must not advertise them.
+#[test]
+fn required_capabilities_answer_typed_unimplemented_everywhere() {
+    let ir = todo_ir();
+    let calls = vec![
+        CapabilityCall::new("camera", "available", Value::Null),
+        CapabilityCall::new("camera", "initialize", Value::Null),
+        CapabilityCall::new("camera", "dispose", Value::Null),
+        CapabilityCall::new("location", "requestPermission", Value::Null),
+        CapabilityCall::new("location", "getCurrent", Value::Null),
+        CapabilityCall::new("notifications", "requestPermission", Value::Null),
+        CapabilityCall::new(
+            "notifications",
+            "show",
+            json!({ "title": "t", "body": "b" }),
+        ),
+        CapabilityCall::new("notifications", "cancel", json!({ "id": 1 })),
+    ];
+    for mut adapter in parity_adapters(&ir) {
+        let name = adapter.name().to_owned();
+        for call in &calls {
+            for required in ["camera", "location", "notifications"] {
+                assert!(
+                    !adapter.capabilities().supports(required),
+                    "{name} must not advertise {required}"
+                );
+            }
+            let error = adapter
+                .invoke_capability(call)
+                .expect_err("required capabilities have no device here");
+            assert_eq!(error.code, capability_codes::UNIMPLEMENTED, "{name}");
+            assert!(error.message.contains(&call.capability), "{name}");
+            assert_eq!(error.details, Value::Null, "{name}");
+        }
+        adapter.shutdown().expect("the adapter shuts down");
+    }
+}
