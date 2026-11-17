@@ -16,9 +16,8 @@
 //! `AdapterError::Timeout`, never a hang and never a panic.
 
 use crate::ir::FullstackIr;
-use crate::store::{MapStore, Store};
 use crate::{
-    capabilities, AdapterError, Capabilities, CapabilityCall, CapabilityError, LayerOptions,
+    capability_codes, AdapterError, Capabilities, CapabilityCall, CapabilityError, LayerOptions,
     Request, Response, RuntimeAdapter,
 };
 use serde_json::{json, Value};
@@ -35,11 +34,12 @@ pub const DEFAULT_TIMEOUT_MS: u64 = 1000;
 
 /// Protocol id the host must echo in its ready frame. Bumped with the frame
 /// schema: response frames carry required `headers` since /2, request frames
-/// carry required `headers` since /3 and the handshake carries the optional
-/// `options` section (CORS origin, bearer token) since /4. The id is asserted at the handshake
+/// carry required `headers` since /3, the handshake carries the optional
+/// `options` section (CORS origin, bearer token) since /4, and capability
+/// calls ride capability frames since /5. The id is asserted at the handshake
 /// because the host script is read from disk at runtime, so a stale script
 /// must fail fast instead of silently dropping frame fields.
-pub const HOST_PROTOCOL: &str = "opurom-runtime-adapters/4";
+pub const HOST_PROTOCOL: &str = "opurom-runtime-adapters/5";
 
 /// Grace period given to the host to answer the shutdown message.
 const SHUTDOWN_GRACE_MS: u64 = 200;
@@ -99,9 +99,6 @@ impl Default for NodeConfig {
 pub struct NodeJs {
     config: NodeConfig,
     ir: FullstackIr,
-    // Capability storage is adapter-local until the node protocol gains a
-    // capability frame; the HTTP business logic still runs in the host script.
-    cap_store: MapStore,
     capabilities: Capabilities,
     child: Option<Child>,
     stdin: Option<ChildStdin>,
@@ -118,7 +115,6 @@ impl NodeJs {
         Self {
             config,
             ir,
-            cap_store: MapStore::new(),
             capabilities: Capabilities {
                 async_io: true,
                 threads: true,
@@ -250,6 +246,7 @@ impl NodeJs {
                 "corsOrigin": self.config.options.cors_origin,
                 "authToken": self.config.options.auth_token,
             },
+            "appVersion": crate::APP_VERSION,
         }))?;
         match self.read_message(self.config.timeout_ms)? {
             Some(message) if message.get("type").and_then(Value::as_str) == Some("ready") => {
@@ -281,6 +278,10 @@ impl NodeJs {
             let _ = reader.join();
         }
     }
+}
+
+fn to_capability_error(error: AdapterError) -> CapabilityError {
+    CapabilityError::new(capability_codes::ERROR, error.to_string(), Value::Null)
 }
 
 impl RuntimeAdapter for NodeJs {
@@ -342,18 +343,58 @@ impl RuntimeAdapter for NodeJs {
     }
 
     fn invoke_capability(&mut self, call: &CapabilityCall) -> Result<Value, CapabilityError> {
-        capabilities::dispatch(&self.ir.app, &mut self.cap_store, call)
+        if let Err(error) = self.connect() {
+            return Err(to_capability_error(error));
+        }
+        self.send(&json!({
+            "type": "capability",
+            "call": {
+                "capability": call.capability,
+                "method": call.method,
+                "arguments": call.arguments,
+            },
+        }))
+        .map_err(to_capability_error)?;
+        let message = self
+            .read_message(self.config.timeout_ms)
+            .map_err(to_capability_error)?
+            .ok_or_else(|| {
+                CapabilityError::new(
+                    capability_codes::ERROR,
+                    "host closed the connection before answering",
+                    Value::Null,
+                )
+            })?;
+        match message.get("type").and_then(Value::as_str) {
+            Some("capability_result") => Ok(message.get("value").cloned().unwrap_or(Value::Null)),
+            Some("capability_error") => Err(CapabilityError {
+                code: message
+                    .get("code")
+                    .and_then(Value::as_str)
+                    .unwrap_or(capability_codes::ERROR)
+                    .to_owned(),
+                message: message
+                    .get("message")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_owned(),
+                details: message.get("details").cloned().unwrap_or(Value::Null),
+            }),
+            other => Err(CapabilityError::new(
+                capability_codes::ERROR,
+                format!("unexpected host message type {other:?}"),
+                Value::Null,
+            )),
+        }
     }
 
     fn shutdown(&mut self) -> Result<(), AdapterError> {
         if self.child.is_none() {
-            self.cap_store.clear();
             return Ok(());
         }
         let _ = self.send(&json!({ "type": "shutdown" }));
         let _ = self.read_message(SHUTDOWN_GRACE_MS);
         self.stop();
-        self.cap_store.clear();
         Ok(())
     }
 }

@@ -13,7 +13,7 @@ rl.on('line', (line) => {
   }
   if (msg.type === 'handshake') {
     process.stdout.write(
-      JSON.stringify({ type: 'ready', ok: true, protocol: 'opurom-runtime-adapters/4' }) + '\n'
+      JSON.stringify({ type: 'ready', ok: true, protocol: 'opurom-runtime-adapters/5' }) + '\n'
     );
   }
   // No reply for invoke/shutdown on purpose.

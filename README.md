@@ -85,6 +85,20 @@ runtime. `AdapterError` is a value: a missing `node` binary is
 `AdapterError::HostUnavailable`, a silent host is
 `AdapterError::Timeout`. Neither is a panic.
 
+Capability calls are additive: `invoke_capability(CapabilityCall)` returns a
+JSON value or a typed `CapabilityError { code, message, details }` with a stable
+snake_case code. `storage` and `app_info` are implemented on all four runtimes;
+clipboard, haptics, system sounds and system UI follow the optional ladder
+(null read, false query, no-op command); camera, location and notifications
+answer `unimplemented`. Every runtime advertises its capability support in
+`Capabilities::supported`. The HTTP byte contract above never changes.
+
+The node host speaks protocol `opurom-runtime-adapters/5`: capability calls
+ride one `capability` frame and receive exactly one `capability_result` or
+`capability_error` frame. A host that still speaks `/4` or older is refused at
+the handshake with `AdapterError::Protocol("host protocol mismatch: ...")`; it
+is never silently accepted with missing frames.
+
 This is a *backend runtime* ABI. It is distinct from the 0.1.0 `PlatformAdapter`
 ABI in
 the framework implementation,

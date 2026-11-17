@@ -18,11 +18,12 @@ import { createHash } from 'node:crypto';
 import readline from 'node:readline';
 
 const MAX_BODY_BYTES = 1024 * 1024;
-// Frame schema v3: response frames carry a required `headers` map since /2 and
-// request frames since /3. The protocol id is asserted by the Rust side at the
-// handshake, so a stale copy of this script fails fast instead of silently
-// dropping frame fields.
-const PROTOCOL = 'opurom-runtime-adapters/4';
+// Frame schema v4: response frames carry a required `headers` map since /2,
+// request frames since /3, the handshake carries layer options since /4, and
+// capability calls ride `capability` frames since /5. The protocol id is
+// asserted by the Rust side at the handshake, so a stale copy of this script
+// fails fast instead of silently dropping frame fields.
+const PROTOCOL = 'opurom-runtime-adapters/5';
 
 // Responses larger than this many bytes would be gzip-compressed by the host
 // transport, which a `304` must record with `Vary: Accept-Encoding`.
@@ -78,8 +79,13 @@ let ir = { app: '', models: [], api: [] };
 // Operator layer options handed over in the handshake frame; every field
 // defaults to off, mirroring the framework's environment defaults.
 let layerOptions = { corsOrigin: null, authToken: null };
+// Build identity handed over at the handshake, mirroring the Rust
+// compile-time constant.
+let appVersion = '';
 /** model name -> Map(key -> row) */
 const tables = new Map();
+/** Capability storage, host-local and separate from the CRUD tables. */
+const capStore = new Map();
 
 function canonicalJson(value) {
   if (value === null || value === undefined) return 'null';
@@ -537,6 +543,103 @@ function serve(request) {
   return { status: 200, body: { deleted: true } };
 }
 
+// Capability calls mirror `src/capabilities.rs`: the same method sets, the
+// same degradation tiers and the same typed error codes. Storage is
+// host-local and separate from the CRUD tables.
+function capabilityError(code, message) {
+  return { error: { code, message, details: null } };
+}
+
+function argumentsObject(args) {
+  return args !== null && typeof args === 'object' && !Array.isArray(args) ? args : null;
+}
+
+function capabilityStorage(method, args) {
+  if (!['set', 'get', 'remove', 'clear', 'keys', 'getAll'].includes(method)) {
+    return capabilityError('unimplemented', `method ${method} is not part of storage`);
+  }
+  const object = argumentsObject(args);
+  if (method === 'keys') return { value: Array.from(capStore.keys()) };
+  if (method === 'getAll') {
+    const all = {};
+    for (const [key, value] of capStore) all[key] = value;
+    return { value: all };
+  }
+  if (method === 'clear') {
+    capStore.clear();
+    return { value: true };
+  }
+  const key = object === null ? undefined : object.key;
+  if (typeof key !== 'string') {
+    return capabilityError('invalid_argument', 'storage call needs a string key');
+  }
+  if (method === 'set') {
+    if (object === null || !Object.hasOwn(object, 'value')) {
+      return capabilityError('invalid_argument', 'missing argument value');
+    }
+    const value = object.value === undefined ? null : object.value;
+    capStore.set(key, value);
+    return { value: true };
+  }
+  if (method === 'get') return { value: capStore.has(key) ? capStore.get(key) : null };
+  if (method === 'remove') return { value: capStore.delete(key) };
+  return capabilityError('unimplemented', `method ${method} is not part of storage`);
+}
+
+function capabilityAppInfo(method) {
+  if (method === 'buildName') return { value: appVersion };
+  if (method === 'buildNumber') return { value: null };
+  if (method === 'get') {
+    return { value: { name: ir.app, buildName: appVersion, buildNumber: null } };
+  }
+  return capabilityError('unimplemented', `method ${method} is not part of app_info`);
+}
+
+// Optional capabilities: null for a read, false for a query, no-op success
+// for a command. An unrecognized method is never a fake success.
+const NO_OP_METHODS = {
+  clipboard: ['getData', 'hasStrings', 'setData'],
+  haptics: [
+    'vibrate',
+    'lightImpact',
+    'mediumImpact',
+    'heavyImpact',
+    'selectionClick',
+    'successNotification',
+    'warningNotification',
+    'errorNotification',
+  ],
+  system_sound: ['play'],
+  system_ui: ['setPreferredOrientations', 'setEnabledSystemUIMode'],
+};
+
+function capabilityNoOp(capability, method, args) {
+  if (!NO_OP_METHODS[capability].includes(method)) {
+    return capabilityError('unimplemented', `method ${method} is not part of ${capability}`);
+  }
+  if (capability === 'clipboard' && method === 'setData') {
+    const object = argumentsObject(args);
+    if (object === null || typeof object.text !== 'string') {
+      return capabilityError('invalid_argument', 'clipboard call needs a string text');
+    }
+  }
+  if (capability === 'clipboard' && method === 'hasStrings') return { value: false };
+  return { value: null };
+}
+
+function capability(call) {
+  const name = String(call.capability || '');
+  const method = String(call.method || '');
+  const args = call.arguments === undefined ? null : call.arguments;
+  if (name === 'storage') return capabilityStorage(method, args);
+  if (name === 'app_info') return capabilityAppInfo(method);
+  if (Object.hasOwn(NO_OP_METHODS, name)) return capabilityNoOp(name, method, args);
+  return capabilityError(
+    'unimplemented',
+    `capability ${name} is not implemented by this runtime`
+  );
+}
+
 function write(message) {
   process.stdout.write(JSON.stringify(message) + '\n');
 }
@@ -566,7 +669,18 @@ rl.on('line', (line) => {
         authToken: typeof raw.authToken === 'string' ? raw.authToken : null,
       };
       tables.clear();
+      capStore.clear();
+      appVersion = typeof message.appVersion === 'string' ? message.appVersion : '';
       write({ type: 'ready', ok: true, protocol: PROTOCOL });
+      return;
+    }
+    if (message.type === 'capability') {
+      const outcome = capability(message.call || {});
+      if (outcome.error) {
+        write({ type: 'capability_error', ...outcome.error });
+      } else {
+        write({ type: 'capability_result', value: outcome.value });
+      }
       return;
     }
     if (message.type === 'invoke') {
