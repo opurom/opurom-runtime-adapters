@@ -1388,7 +1388,39 @@ fn no_op_family_pins_degradation_tiers_on_every_runtime() {
     }
 }
 
-/// Required capabilities have no device on any backend runtime: every
+/// A malformed capability reply is a hard failure with the catch-all code,
+/// never a silently coerced value. This mirrors the framework's strict reply
+/// decoding (message_codecs.dart:638-660; slots at :653-655).
+#[test]
+fn a_malformed_capability_frame_is_a_typed_error() {
+    let ir = todo_ir();
+    let stub = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/malformed-capability-host.mjs");
+    let config = NodeConfig::new(stub).with_timeout_ms(500);
+    let mut node = NodeJs::with_config(ir, config);
+
+    let no_value = node
+        .invoke_capability(&CapabilityCall::new(
+            "storage",
+            "get",
+            json!({ "key": "k" }),
+        ))
+        .expect_err("a result frame without a value slot is malformed");
+    assert_eq!(no_value.code, capability_codes::ERROR);
+    assert!(no_value.message.contains("value"), "{}", no_value.message);
+
+    let no_code = node
+        .invoke_capability(&CapabilityCall::new(
+            "storage",
+            "set",
+            json!({ "key": "k", "value": "v" }),
+        ))
+        .expect_err("an error frame without a string code slot is malformed");
+    assert_eq!(no_code.code, capability_codes::ERROR);
+    assert!(no_code.message.contains("code"), "{}", no_code.message);
+
+    node.shutdown().expect("shutdown is clean");
+}
 /// documented method answers typed `unimplemented` with a stable code, an
 /// empty details slot and no panic. The matrix must not advertise them.
 #[test]

@@ -284,6 +284,14 @@ fn to_capability_error(error: AdapterError) -> CapabilityError {
     CapabilityError::new(capability_codes::ERROR, error.to_string(), Value::Null)
 }
 
+fn malformed_frame(why: &str) -> CapabilityError {
+    CapabilityError::new(
+        capability_codes::ERROR,
+        format!("malformed host frame: {why}"),
+        Value::Null,
+    )
+}
+
 impl RuntimeAdapter for NodeJs {
     fn name(&self) -> &str {
         "node"
@@ -365,21 +373,35 @@ impl RuntimeAdapter for NodeJs {
                     Value::Null,
                 )
             })?;
+        // Mirrors the framework's strict reply decoding: an envelope missing a
+        // required slot is a hard failure, never a silently coerced value
+        // (message_codecs.dart:638-660, empty reply at :640-641, typed slots
+        // at :653-655). The catch-all code follows platform_channel.dart:611-613.
         match message.get("type").and_then(Value::as_str) {
-            Some("capability_result") => Ok(message.get("value").cloned().unwrap_or(Value::Null)),
-            Some("capability_error") => Err(CapabilityError {
-                code: message
+            Some("capability_result") => {
+                let value = message
+                    .get("value")
+                    .ok_or_else(|| malformed_frame("result frame has no value slot"))?;
+                Ok(value.clone())
+            }
+            Some("capability_error") => {
+                let code = message
                     .get("code")
                     .and_then(Value::as_str)
-                    .unwrap_or(capability_codes::ERROR)
-                    .to_owned(),
-                message: message
+                    .ok_or_else(|| malformed_frame("error frame has no string code slot"))?;
+                let raw_message = message
                     .get("message")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default()
-                    .to_owned(),
-                details: message.get("details").cloned().unwrap_or(Value::Null),
-            }),
+                    .ok_or_else(|| malformed_frame("error frame has no message slot"))?;
+                if !raw_message.is_string() && !raw_message.is_null() {
+                    return Err(malformed_frame("error frame message slot is not a string"));
+                }
+                Err(CapabilityError {
+                    code: code.to_owned(),
+                    message: raw_message.as_str().unwrap_or_default().to_owned(),
+                    // Any details value is accepted; an absent slot is null.
+                    details: message.get("details").cloned().unwrap_or(Value::Null),
+                })
+            }
             other => Err(CapabilityError::new(
                 capability_codes::ERROR,
                 format!("unexpected host message type {other:?}"),
