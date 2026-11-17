@@ -3,7 +3,10 @@
 use crate::ir::FullstackIr;
 use crate::logic;
 use crate::store::{MapStore, Store};
-use crate::{AdapterError, Capabilities, LayerOptions, Request, Response, RuntimeAdapter};
+use crate::{
+    capabilities, AdapterError, Capabilities, CapabilityCall, CapabilityError, LayerOptions,
+    Request, Response, RuntimeAdapter, Value,
+};
 
 /// The reference runtime: the business logic compiled into this process.
 ///
@@ -12,6 +15,7 @@ use crate::{AdapterError, Capabilities, LayerOptions, Request, Response, Runtime
 pub struct NativeRust {
     ir: FullstackIr,
     store: MapStore,
+    cap_store: MapStore,
     capabilities: Capabilities,
     options: LayerOptions,
 }
@@ -21,13 +25,14 @@ impl NativeRust {
         Self {
             ir,
             store: MapStore::new(),
+            cap_store: MapStore::new(),
             capabilities: Capabilities {
                 async_io: false,
                 threads: false,
                 fs: false,
                 network: false,
                 max_body: crate::MAX_BODY_BYTES,
-                supported: &[],
+                supported: &["app_info", "storage"],
             },
             options: LayerOptions::default(),
         }
@@ -59,8 +64,13 @@ impl RuntimeAdapter for NativeRust {
         )
     }
 
+    fn invoke_capability(&mut self, call: &CapabilityCall) -> Result<Value, CapabilityError> {
+        capabilities::dispatch(&self.ir.app, &mut self.cap_store, call)
+    }
+
     fn shutdown(&mut self) -> Result<(), AdapterError> {
         self.store.clear();
+        self.cap_store.clear();
         Ok(())
     }
 }

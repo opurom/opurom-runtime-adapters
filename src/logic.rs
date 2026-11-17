@@ -404,7 +404,7 @@ fn route_response(
         if matches!(req.method.as_str(), "GET" | "HEAD") {
             return Ok(Response::new(
                 200,
-                json!({ "ok": true, "app": ir.app, "version": "0.1.0" }),
+                json!({ "ok": true, "app": ir.app, "version": crate::APP_VERSION }),
             ));
         }
         return Ok(method_not_allowed("GET, HEAD"));

@@ -16,7 +16,11 @@
 //! `AdapterError::Timeout`, never a hang and never a panic.
 
 use crate::ir::FullstackIr;
-use crate::{AdapterError, Capabilities, LayerOptions, Request, Response, RuntimeAdapter};
+use crate::store::{MapStore, Store};
+use crate::{
+    capabilities, AdapterError, Capabilities, CapabilityCall, CapabilityError, LayerOptions,
+    Request, Response, RuntimeAdapter,
+};
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
 use std::io::{BufRead, BufReader, Write};
@@ -95,6 +99,9 @@ impl Default for NodeConfig {
 pub struct NodeJs {
     config: NodeConfig,
     ir: FullstackIr,
+    // Capability storage is adapter-local until the node protocol gains a
+    // capability frame; the HTTP business logic still runs in the host script.
+    cap_store: MapStore,
     capabilities: Capabilities,
     child: Option<Child>,
     stdin: Option<ChildStdin>,
@@ -111,13 +118,14 @@ impl NodeJs {
         Self {
             config,
             ir,
+            cap_store: MapStore::new(),
             capabilities: Capabilities {
                 async_io: true,
                 threads: true,
                 fs: false,
                 network: false,
                 max_body: crate::MAX_BODY_BYTES,
-                supported: &[],
+                supported: &["app_info", "storage"],
             },
             child: None,
             stdin: None,
@@ -326,13 +334,19 @@ impl RuntimeAdapter for NodeJs {
         })
     }
 
+    fn invoke_capability(&mut self, call: &CapabilityCall) -> Result<Value, CapabilityError> {
+        capabilities::dispatch(&self.ir.app, &mut self.cap_store, call)
+    }
+
     fn shutdown(&mut self) -> Result<(), AdapterError> {
         if self.child.is_none() {
+            self.cap_store.clear();
             return Ok(());
         }
         let _ = self.send(&json!({ "type": "shutdown" }));
         let _ = self.read_message(SHUTDOWN_GRACE_MS);
         self.stop();
+        self.cap_store.clear();
         Ok(())
     }
 }

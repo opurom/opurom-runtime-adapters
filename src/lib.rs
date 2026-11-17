@@ -11,6 +11,7 @@
 //! which describes UI hosts (windowing, input, presentation).
 
 pub mod adapters;
+pub mod capabilities;
 pub mod ir;
 pub mod logic;
 pub mod report;
@@ -22,6 +23,10 @@ pub use adapters::{
 pub use ir::FullstackIr;
 pub use logic::{sample_checks, Check};
 pub use report::{CheckFailure, RuntimeReport};
+
+/// App version stamped at compile time from the crate manifest. The health
+/// payload and `app_info.buildName` both use this one value.
+pub const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// Request body cap, 1 MiB (framework rules).
 pub const MAX_BODY_BYTES: usize = 1024 * 1024;

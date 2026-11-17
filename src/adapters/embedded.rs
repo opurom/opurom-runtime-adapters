@@ -13,11 +13,15 @@
 use crate::ir::FullstackIr;
 use crate::logic;
 use crate::store::{FixedStore, Store};
-use crate::{AdapterError, Capabilities, LayerOptions, Request, Response, RuntimeAdapter};
+use crate::{
+    capabilities, AdapterError, Capabilities, CapabilityCall, CapabilityError, LayerOptions,
+    Request, Response, RuntimeAdapter, Value,
+};
 
 pub struct Embedded {
     ir: FullstackIr,
     store: FixedStore,
+    cap_store: FixedStore,
     capabilities: Capabilities,
     options: LayerOptions,
 }
@@ -27,13 +31,14 @@ impl Embedded {
         Self {
             ir,
             store: FixedStore::new(),
+            cap_store: FixedStore::new(),
             capabilities: Capabilities {
                 async_io: false,
                 threads: false,
                 fs: false,
                 network: false,
                 max_body: crate::MAX_BODY_BYTES,
-                supported: &[],
+                supported: &["app_info", "storage"],
             },
             options: LayerOptions::default(),
         }
@@ -74,8 +79,13 @@ impl RuntimeAdapter for Embedded {
         )
     }
 
+    fn invoke_capability(&mut self, call: &CapabilityCall) -> Result<Value, CapabilityError> {
+        capabilities::dispatch(&self.ir.app, &mut self.cap_store, call)
+    }
+
     fn shutdown(&mut self) -> Result<(), AdapterError> {
         self.store.clear();
+        self.cap_store.clear();
         Ok(())
     }
 }

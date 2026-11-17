@@ -1197,14 +1197,14 @@ fn all_runtimes_agree_on_two_parameter_routes() {
 /// `unimplemented` answer, including for an unknown capability and malformed
 /// arguments. No call may panic and the HTTP ABI stays byte-identical.
 #[test]
-fn capability_default_is_typed_unimplemented_on_every_runtime() {
+fn capability_unsupported_is_typed_unimplemented_on_every_runtime() {
     let ir = todo_ir();
     for mut adapter in parity_adapters(&ir) {
         let name = adapter.name().to_owned();
         for call in [
             CapabilityCall::new("camera", "available", Value::Null),
             CapabilityCall::new("clipboard", "getData", json!({ "format": "text/plain" })),
-            CapabilityCall::new("storage", "getAll", json!([])),
+            CapabilityCall::new("storage", "not_a_method", json!([])),
             CapabilityCall::new("not_a_capability", "anything", Value::Null),
         ] {
             let error = adapter
@@ -1219,9 +1219,11 @@ fn capability_default_is_typed_unimplemented_on_every_runtime() {
             assert_eq!(error.details, Value::Null, "{name}");
         }
         for kind in CAPABILITY_KINDS {
-            assert!(
-                !adapter.capabilities().supports(kind),
-                "{name} must not advertise an unimplemented capability ({kind})"
+            let implemented = matches!(kind, "app_info" | "storage");
+            assert_eq!(
+                adapter.capabilities().supports(kind),
+                implemented,
+                "{name} matrix drift for {kind}"
             );
         }
         adapter.shutdown().expect("the adapter shuts down");
@@ -1231,4 +1233,80 @@ fn capability_default_is_typed_unimplemented_on_every_runtime() {
     let bytes = run(&mut native, &sample_checks(&todo_ir()));
     assert_eq!(bytes[0].as_slice(), EMPTY_LIST);
     native.shutdown().expect("native shuts down");
+}
+
+/// Storage round-trip and build identity are identical values on all four
+/// runtimes. Health bytes stay pinned to "0.1.0" through the compile-time
+/// constant, so HTTP consumers see no change.
+#[test]
+fn capability_storage_and_app_info_match_across_runtimes() {
+    let ir = todo_ir();
+    let calls = vec![
+        CapabilityCall::new("storage", "get", json!({ "key": "missing" })),
+        CapabilityCall::new("storage", "set", json!({ "key": "k", "value": "v" })),
+        CapabilityCall::new("storage", "get", json!({ "key": "k" })),
+        CapabilityCall::new("storage", "keys", Value::Null),
+        CapabilityCall::new("storage", "getAll", Value::Null),
+        CapabilityCall::new("app_info", "buildName", Value::Null),
+        CapabilityCall::new("app_info", "buildNumber", Value::Null),
+    ];
+    let mut reference: Option<Vec<Value>> = None;
+    for mut adapter in parity_adapters(&ir) {
+        let name = adapter.name().to_owned();
+        let answers: Vec<Value> = calls
+            .iter()
+            .map(|call| {
+                adapter
+                    .invoke_capability(call)
+                    .unwrap_or_else(|error| panic!("{name}: {error:?}"))
+            })
+            .collect();
+        assert_eq!(answers[0], Value::Null, "{name}: absent key");
+        assert_eq!(answers[1], json!(true), "{name}: set receipt");
+        assert_eq!(answers[2], json!("v"), "{name}: round trip");
+        assert_eq!(answers[3], json!(["k"]), "{name}: keys");
+        assert_eq!(answers[4], json!({ "k": "v" }), "{name}: getAll");
+        assert_eq!(answers[5], json!("0.1.0"), "{name}: build name");
+        assert_eq!(answers[6], Value::Null, "{name}: build number");
+        match &reference {
+            Some(expected) => assert_eq!(&answers, expected, "{name} differs from native"),
+            None => reference = Some(answers),
+        }
+        adapter.shutdown().expect("the adapter shuts down");
+    }
+}
+
+/// Negative cases stay values: invalid arguments, unknown methods and the
+/// embedded fixed-value budget all produce typed codes, never a panic.
+#[test]
+fn capability_storage_errors_are_typed_on_every_runtime() {
+    let ir = todo_ir();
+    for mut adapter in parity_adapters(&ir) {
+        let name = adapter.name().to_owned();
+        let missing_key = CapabilityCall::new("storage", "set", json!({ "value": "v" }));
+        let error = adapter
+            .invoke_capability(&missing_key)
+            .expect_err("a missing key is an error value");
+        assert_eq!(error.code, capability_codes::INVALID_ARGUMENT, "{name}");
+
+        let unknown = CapabilityCall::new("storage", "teleport", Value::Null);
+        let error = adapter
+            .invoke_capability(&unknown)
+            .expect_err("an unknown method is an error value");
+        assert_eq!(error.code, capability_codes::UNIMPLEMENTED, "{name}");
+
+        let over_budget = CapabilityCall::new(
+            "storage",
+            "set",
+            json!({ "key": "long", "value": "x".repeat(100) }),
+        );
+        let result = adapter.invoke_capability(&over_budget);
+        if name == "embedded" {
+            let error = result.expect_err("the fixed value budget refuses the write");
+            assert_eq!(error.code, capability_codes::BUDGET_EXCEEDED, "{name}");
+        } else {
+            assert_eq!(result.expect("map-backed runtimes accept it"), json!(true));
+        }
+        adapter.shutdown().expect("the adapter shuts down");
+    }
 }
