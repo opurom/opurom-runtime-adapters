@@ -4,6 +4,10 @@
 //! so a capability key cannot collide with an IR model row. Values are stored
 //! as scalar cells (or compact JSON text for composite values), which fits the
 //! embedded fixed-value budget as well as the map-backed runtimes.
+//!
+//! The load-once/async-write shape follows the official storage plugin
+//! (`shared_preferences.dart:27-42`, `:58-92`, `:95-139`, flutter/plugins
+//! 557d3284); no Flutter tree or dynamic handler registry is introduced.
 
 use crate::store::Store;
 use crate::{capability_codes, AdapterError, CapabilityCall, CapabilityError, Value, APP_VERSION};
@@ -141,9 +145,11 @@ pub fn storage(store: &mut dyn Store, call: &CapabilityCall) -> Result<Value, Ca
 }
 
 /// Optional host capabilities: a runtime without a device answers using
-/// Flutter's no-op ladder. Reads return null, queries return false, commands
-/// succeed without effect. An unrecognized method stays `unimplemented`, so an
-/// unknown operation never gets a fake success.
+/// Flutter's no-op ladder: null read (`clipboard.dart:46-55`), false query
+/// (`:69-72`), no-op command (`haptic_feedback.dart:29-33`,
+/// `system_sound.dart:38-42`, `system_chrome.dart:574-575`, flutter 3.50.0).
+/// An unrecognized method stays `unimplemented`, so an unknown operation never
+/// gets a fake success.
 fn no_op(capability: &str, call: &CapabilityCall) -> Result<Value, CapabilityError> {
     let known = match capability {
         "clipboard" => matches!(call.method.as_str(), "getData" | "hasStrings" | "setData"),
@@ -181,6 +187,8 @@ fn no_op(capability: &str, call: &CapabilityCall) -> Result<Value, CapabilityErr
     }
 }
 
+/// Build identity is a compile-time constant, not a runtime lookup
+/// (`app_version.dart:17-31`, flutter 3.50.0).
 fn app_info(app: &str, call: &CapabilityCall) -> Result<Value, CapabilityError> {
     match call.method.as_str() {
         "buildName" => Ok(Value::String(APP_VERSION.to_owned())),
@@ -204,7 +212,8 @@ pub fn dispatch(
         "app_info" => app_info(app, call),
         "clipboard" | "haptics" | "system_sound" | "system_ui" => no_op(&call.capability, call),
         // Required capabilities have no device on any backend runtime. They
-        // answer typed `unimplemented`; a fake success is never allowed.
+        // answer typed `unimplemented` (`platform_channel.dart:340-366`), so a
+        // fake success is never allowed.
         "camera" | "location" | "notifications" => {
             Err(CapabilityError::unimplemented(&call.capability))
         }

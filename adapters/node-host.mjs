@@ -544,8 +544,10 @@ function serve(request) {
 }
 
 // Capability calls mirror `src/capabilities.rs`: the same method sets, the
-// same degradation tiers and the same typed error codes. Storage is
-// host-local and separate from the CRUD tables.
+// same degradation tiers and the same typed error codes. Flutter sources
+// (3.50.0): clipboard.dart:46-72, haptic_feedback.dart:23-150,
+// platform_channel.dart:340-366. Storage is host-local and separate from the
+// CRUD tables.
 function capabilityError(code, message) {
   return { error: { code, message, details: null } };
 }

@@ -258,7 +258,8 @@ impl fmt::Display for AdapterError {
 impl std::error::Error for AdapterError {}
 
 /// Stable capability error codes, snake_case. These are the `code` values of
-/// the typed capability error, mirroring `PlatformException.code`.
+/// the typed capability error, mirroring `PlatformException.code`
+/// (`FW/services/message_codec.dart:108-125` in flutter 3.50.0).
 pub mod capability_codes {
     pub const UNIMPLEMENTED: &str = "unimplemented";
     pub const ERROR: &str = "error";
